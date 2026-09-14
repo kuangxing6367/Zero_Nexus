@@ -1,0 +1,9 @@
+[package]
+id = "store"
+name = "JSON Store"
+type = "tool"
+version = "1.0.0"
+description = "JSON 存储抽象（KV + 原子写），统一路径，下游不再各自 json.load/dump"
+dependencies = []
+provides = ["store"]
+entry = "main.py"

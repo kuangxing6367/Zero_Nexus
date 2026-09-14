@@ -1,0 +1,9 @@
+[package]
+id = "ws"
+name = "WS Transport"
+type = "tool"
+version = "1.0.0"
+description = "统一 WebSocket 传输接口（serve/connect），下游不再各自手搓 WS 服务与鉴权"
+dependencies = []
+provides = ["ws"]
+entry = "main.py"

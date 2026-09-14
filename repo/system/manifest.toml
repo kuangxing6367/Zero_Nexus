@@ -1,0 +1,9 @@
+[package]
+id = "system"
+name = "System Info"
+type = "tool"
+version = "1.0.0"
+description = "系统自述接口（get_system_info / capabilities），框架亲口告知运行环境与能力"
+dependencies = []
+provides = ["system"]
+entry = "main.py"
