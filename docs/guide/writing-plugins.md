@@ -1,464 +1,200 @@
 # 编写插件
 
-> **本篇面向**：写业务插件的 Python 开发者。假设你已按 [安装](./installation.md) 把宿主跑起来、看到了「框架启动完成」日志。
->
-> 本章用一个**完整的「每日签到」插件**带你从零写起。每个知识点都先给能跑的代码，再逐行拆讲它：为什么这么写、不写会怎样。读完你就能写任意插件。
+本篇从零写一个完整插件，覆盖命令、事件、数据库、配置、权限、定时任务与多文件组织。
 
-## 0. 我们要做一个什么插件
+## 一、最小插件
 
-「每日签到」：在群里发 `/签到` → 记一次签到并累计积分；发 `/我的积分` → 查看自己攒了多少分。
+一个插件就是一个目录，放在 `plugins/` 下，入口固定为 `main.py`，必须提供 `register(ctx)`：
 
-麻雀虽小，它用到了插件开发的全部核心能力：
-
-| 能力 | 用在哪 |
-| ---- | ---- |
-| 插件元信息 | `__plugin_meta__` 声明名字、版本、作者 |
-| 注册入口 | `register(ctx)` 里登记命令 |
-| 命令注册 | `/签到` `/我的积分` 两个命令 |
-| 发消息 | 回复签到结果 |
-| 数据库 | 存签到记录与积分 |
-| 配置 | 单次签到给多少分（Web 面板可改） |
-| 定时任务 | 每天 0 点清理过期标记 |
-| 事件订阅 | 新成员入群送初始积分 |
-| 日志 / 审计 | 记录签到操作 |
-
-## 1. 最小可运行插件
-
-先写一个能跑的最简插件，确认环境没问题。
-
-创建 `plugins/hello/main.py`：
+```
+plugins/
+└── greeter/
+    └── main.py
+```
 
 ```python
-__plugin_meta__ = {
-    "name": "Hello",
-    "version": "1.0.0",
-    "author": "你的名字",
-    "desc": "一个简单的 Hello 插件",
-    "priority": 50,
-}
-
+# plugins/greeter/main.py
 def register(ctx):
-    ctx.command("/hello", handle_hello, description="打个招呼")
+    ctx.command("/hello", on_hello, description="打个招呼")
 
-def handle_hello(event, match):
-    ctx.send_msg(
-        user_id=event.user_id,
-        group_id=event.group_id if event.is_group else None,
-        message="Hello, World!"
-    )
+def on_hello(event, match):
+    ctx.send_msg(group_id=event.group_id, user_id=None, message="Hello, World!")
 ```
 
-启动宿主（或到 Web 面板「插件」页点「重载」），向任意已接入的平台发送 `/hello` 即可看到回复。
+- `ctx` 由框架在 `register(ctx)` 时注入，并挂到插件主模块上，handler 里可直接用全局 `ctx`；
+- handler 签名固定为 `(event, match)`：`event` 是事件对象，`match` 是正则匹配结果（无捕获组时为 `None`）。
 
-> 发消息需要至少一个就绪的**接入端**（接入端负责把消息真正发到某个平台）。如果你还没对接平台，可以先读 [对接 IM 平台](./connect-im.md) 把连接打通；或者走「纯定时任务 / HTTP 事件注入」两条不需要聊天的路线（见 [开始使用](./getting-started.md)）。
+放好后在后台「插件」页启用，或重启框架。
 
-## 2. 逐行讲解
-
-### 2.1 `__plugin_meta__`：插件身份证
-
-```python
-__plugin_meta__ = {
-    "name": "Hello",
-    "version": "1.0.0",
-    "author": "你的名字",
-    "desc": "一个简单的插件",
-    "priority": 50,
-}
-```
-
-| 字段 | 必填 | 说明 |
-| ---- | ---- | ---- |
-| `name` | 是 | 显示名，出现在 Web 面板和帮助菜单 |
-| `version` | 是 | 版本号，升级插件时改它 |
-| `author` | 是 | 作者 |
-| `desc` | 否 | 一句话描述 |
-| `priority` | 否 | 加载 / 匹配优先级，数字越小越先加载、越先匹配，默认 50 |
-
-> **为什么需要 priority？** 一条消息到来时，框架按插件优先级从小到大依次尝试匹配命令。两个插件都注册了 `/help` 时，priority 小的赢。命令的注册顺序和加载顺序也都跟它有关。
-
-元信息也可以写在 `plugin.yaml` 里，且 **`plugin.yaml` 的值会覆盖 `__plugin_meta__`**（便于不改代码改版本号）。
-
-### 2.2 `register(ctx)`：唯一注册入口
+## 二、命令注册
 
 ```python
-def register(ctx):
-    ctx.command("/hello", handle_hello)
-```
-
-`register` 是框架规定的**唯一入口**，插件（重新）加载时框架调用它一次，把 `ctx`（插件上下文）交给你——**所有能力都通过 `ctx` 调用**。
-
-- `ctx.command(命令名, 处理函数)`：注册一个命令。
-- 你还能在 `register` 里注册定时任务 `ctx.task(...)`、订阅事件 `ctx.on(...)`、挂仪表盘卡片 `ctx.dashboard_card(...)`。
-
-> **为什么 register 只注册、不干活？** 框架需要一个「清单」：你到底有哪些命令 / 任务 / 事件。登记好之后它才能在消息到来时找到对应函数。**没有 register，插件不会被加载。**
-
-:::warning register 会被重复调用
-心跳检测到文件变化、Web 面板点「重载」时都会重新执行 `register(ctx)`。这里只做「登记」，不要写只能执行一次的副作用（比如建无限循环线程）。一次性初始化放到 `on_loaded(ctx)` 钩子。
-:::
-
-### 2.3 处理函数签名 `(event, match)`
-
-```python
-def handle_hello(event, match):
-    ...
-```
-
-这是命令处理函数的固定格式：
-
-| 参数 | 是什么 | 举例 |
-| ---- | ---- | ---- |
-| `event` | 这条消息的**事件对象**：谁发的、在哪发的、发了什么 | `event.user_id` = 发送者用户 ID |
-| `match` | 命令匹配结果，`match.group(1)` 取命令后面的参数 | 发 `/echo 你好`，`match.group(1)` = `"你好"` |
-
-- `match` 命令没带参数时可能是 `None`，用 `if match:` 判断后再取 `match.group(1)`。
-- 支持异步：函数写成 `async def handle(event, match):`，里面就能 `await`。
-
-> **注意 ctx 哪去了？** `register` 之后，框架把 `ctx` 注入到模块全局变量，所以 `main.py` 里任何函数都能直接用 `ctx`。你**不需要**（也不应该）在函数参数里加 `ctx`。
-
-### 2.4 发消息：`ctx.send_msg` / `ctx.asend_msg`
-
-```python
-ctx.send_msg(
-    user_id=event.user_id,
-    group_id=event.group_id if event.is_group else None,
-    message="今天已经签到过了",
+ctx.command(
+    pattern,                 # 主匹配串：命令名或正则
+    handler,                 # (event, match) -> None
+    priority=50,             # 越小越先匹配
+    dynamic=False,           # 是否登记到后台「动态命令」
+    alias="/h,/hello2",      # 别名，逗号分隔字符串或列表
+    description="打招呼",     # 不填则取 handler 的 docstring 首行
+    require_admin=False,     # 需要管理员/群主/超管
+    require_superuser=False, # 需要超管（优先于 require_admin）
+    require_perm=None,       # 权限节点，如 'greeter.hello'
 )
 ```
 
-| 参数 | 作用 |
-| ---- | ---- |
-| `user_id` | 发给哪个用户（私聊 / 群内指定目标） |
-| `group_id` | 发到哪个群组；与 `user_id` 同时给时按群聊处理 |
-| `message` | 文本消息内容 |
+**匹配规则**：`pattern` 若形如正则（含正则元字符）则按**正则**匹配，否则按**字面串**匹配；
+`alias` 里的每个别名都按同样方式参与匹配。命令在内存路由表里按 `priority` 从小到大依次尝试。
 
-**关键写法**：`group_id=event.group_id if event.is_group else None`
-- 在群里 → `event.is_group` 为 `True` → 回**群组**；
-- 私聊 → `event.is_group` 为 `False` → `group_id=None` → 回**私聊**。
-
-一条代码同时做到「群回群、私回私」，不用自己判断。
-
-:::tip 同步 / 异步
-同步版 `ctx.send_msg(...)` 会在内部丢到线程执行，不阻塞；`async def` 处理函数里推荐用异步版 `await ctx.asend_msg(...)`，效果相同且不阻塞事件循环。
-:::
-
-> 需要发图片、@、回复等富媒体，或做禁言、踢人、查群成员等**平台操作**？这些能力依赖你启用的接入端，详见 [对接 IM 平台](./connect-im.md)。
-
-## 3. 把签到插件写完（完整代码）
-
-下面给出可运行的全貌，之后几节再把每个陌生点拆开讲。
+带捕获组的正则示例：
 
 ```python
-# plugins/sign_in/main.py
-import time, random
+ctx.command(r"/echo\s+(.+)", on_echo)
 
-__plugin_meta__ = {
-    "name": "每日签到",
-    "version": "1.0.0",
-    "author": "你的名字",
-    "desc": "每日签到领积分，连续签到有奖励",
-    "priority": 50,
-}
-
-def register(ctx):
-    # 建表（插件会被反复热加载，必须 IF NOT EXISTS）
-    ctx.create_table("""
-        CREATE TABLE IF NOT EXISTS sign_in_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            day TEXT,
-            score INTEGER DEFAULT 0
-        )
-    """)
-    ctx.command("/签到", handle_sign, alias="/sign", description="每日签到")
-    ctx.command("/我的积分", handle_score, description="查看我的积分")
-    ctx.task("0 0 * * *", reset_daily, description="每日清理过期标记")  # 由 scheduler 插件提供
-    ctx.on("member_increase", on_new_member)                          # 新成员入群
-
-def handle_sign(event, match):
-    today = time.strftime("%Y-%m-%d")
-    signed = ctx.db_query_one(
-        "SELECT id FROM sign_in_records WHERE user_id=%s AND day=%s",
-        (event.user_id, today))
-    if signed:
-        ctx.send_msg(user_id=event.user_id,
-                     group_id=event.group_id if event.is_group else None,
-                     message="你今天已经签到过了")
-        return
-    score = random.randint(1, 10)
-    ctx.db_execute(
-        "INSERT INTO sign_in_records (user_id, day, score) VALUES (%s,%s,%s)",
-        (event.user_id, today, score))
-    ctx.send_msg(user_id=event.user_id,
-                 group_id=event.group_id if event.is_group else None,
-                 message=f"签到成功！获得 {score} 积分")
-
-def handle_score(event, match):
-    row = ctx.db_query_one(
-        "SELECT COALESCE(SUM(score),0) AS total FROM sign_in_records WHERE user_id=%s",
-        (event.user_id,))
-    total = row["total"] if row else 0
-    ctx.send_msg(user_id=event.user_id,
-                 group_id=event.group_id if event.is_group else None,
-                 message=f"你当前积分：{total}")
-
-def reset_daily():
-    # 定时任务：无 event 参数
-    pass
-
-def on_new_member(payload):
-    # 事件订阅：payload 是 dict
-    user_id = payload.get("user_id")
-    if user_id:
-        ctx.db_execute(
-            "INSERT INTO sign_in_records (user_id, day, score) VALUES (%s,'welcome',100)",
-            (user_id,))
+def on_echo(event, match):
+    ctx.send_msg(group_id=event.group_id, user_id=None, message=match.group(1))
 ```
 
-> 上面 `ctx.task` 的调度能力由官方插件 `scheduler` 提供（默认开启）；`member_increase` 这类事件由你启用的接入端产生，具体事件列表见 [对接 IM 平台](./connect-im.md)。
-
-## 4. 数据库：建表与查询
-
-### 4.1 建表
+## 三、同步与异步
 
 ```python
 def register(ctx):
-    ctx.create_table("""
-        CREATE TABLE IF NOT EXISTS sign_in_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            day TEXT,
-            score INTEGER DEFAULT 0
-        )
-    """)
+    ctx.command("/slow", on_slow)          # 普通函数 → 同步方法
+
+async def on_slow(event, match):           # async handler → 用异步方法
+    rows = await ctx.db_query_async("SELECT 1")
+    await ctx.asend_msg(group_id=event.group_id, user_id=None, message="done")
 ```
 
-- `CREATE TABLE IF NOT EXISTS`：表不存在才建，重复加载不报错（**必须加**，插件会被反复热加载）。
-- 你写 `AUTOINCREMENT`（MySQL 语法）也没关系，框架自动翻译成 SQLite 的 `AUTOINCREMENT`。
-- **加前缀避免冲突**：表名建议带插件名，如 `sign_in_records`，别叫 `users`（和框架表重名）。
+> **推荐异步**：同步方法内部桥接到线程/事件循环，异步方法（带 `a` 前缀）零线程切换、不阻塞事件循环。
 
-### 4.2 增删改查
-
-```python
-row  = ctx.db_query_one("SELECT * FROM t WHERE user_id=%s", (uid,))   # 单条
-rows = ctx.db_query("SELECT * FROM t WHERE group_id=%s", (gid,))        # 多条
-n    = ctx.db_execute("UPDATE t SET score=score+1 WHERE id=%s", (id_,)) # 受影响行数
-new_id = ctx.db_insert("INSERT INTO t (user_id) VALUES (%s)", (uid,))   # 自增 ID
-
-# 异步版本（async handler 推荐，走 DB 专用线程池，不阻塞事件循环）
-row = await ctx.db_query_one_async(sql, params)
-await ctx.db_execute_async(sql, params)
-```
-
-### 4.3 两个关键约定
-
-1. **占位符用 `%s`，不要拼字符串**：
-
-   ```python
-   # 正确：参数用 %s 占位，值放第二个参数元组
-   ctx.db_query("SELECT * FROM t WHERE user_id=%s", (event.user_id,))
-   # 错误：直接拼进 SQL，有注入风险
-   ctx.db_query(f"SELECT * FROM t WHERE user_id={event.user_id}")
-   ```
-
-2. **框架自动适配 SQLite / MySQL**：统一写 `%s`，框架翻译成对应方言。你按 MySQL 习惯写（如 `ON DUPLICATE KEY UPDATE`），框架自动转成 SQLite 语法。
-
-### 4.4 事务
-
-```python
-conn = ctx.db_connection()
-try:
-    cur = conn.cursor()
-    cur.execute("UPDATE account SET balance=balance-%s WHERE id=%s", (100, a))
-    cur.execute("UPDATE account SET balance=balance+%s WHERE id=%s", (100, b))
-    conn.commit()
-except Exception:
-    conn.rollback()
-finally:
-    conn.close()   # 连接池模式下为归还连接
-```
-
-## 5. 配置项：让用户能在 Web 面板改
-
-想让「单次签到给 1–10 分」变成可配置？两步。
-
-### 5.1 声明 schema：`_conf_schema.json`
-
-放在插件配置目录（见下方 15 节），文件名为 `_conf_schema.json`：
-
-```json
-{
-  "score_max": {
-    "description": "单次签到最高积分",
-    "type": "number",
-    "default": 10,
-    "hint": "签到随机给 1 到此值"
-  }
-}
-```
-
-支持 `string` / `number` / `select`（带 `options`）等类型，Web 面板据此生成表单。
-
-### 5.2 代码里读取
-
-```python
-def handle_sign(event, match):
-    score_max = ctx.get_config("score_max", 10)   # 第二个参数是默认值
-    score = random.randint(1, score_max)
-```
-
-- `ctx.get_config("score_max", 10)`：读取配置，**没配置时用默认值 10**。
-- 用户改配置**不用重启**，热生效。
-- 一次性取全部：`cfg = ctx.get_all_config()`。
-
-## 6. 定时任务
+## 四、事件订阅
 
 ```python
 def register(ctx):
-    ctx.task("0 8 * * *", daily_report, description="每日 8 点报告")
-    ctx.task("*/5 * * * *", heartbeat, description="每 5 分钟")
+    ctx.on("notice.group_recall", on_recall)          # 业务事件
+    ctx.on_raw_message(on_any_message)               # 命令匹配前的原始消息
+    ctx.once("plugin.load", on_first_load)           # 只触发一次
+    ctx.emit("greeter.hello", {"user": 1})           # 发布自定义事件
+
+def on_any_message(event):
+    ctx.log(f"原始消息: {event.message}")
 ```
 
-cron 格式为 `分 时 日 月 周`。任务 ID 自动生成为 `<插件名>_<函数名>`。
+`ctx.on / once / off / emit / aemit` 与 `await ctx.await_event(name, timeout)` 详见 [ctx 参考](../api/basic/ctx.md)。
 
-> **定时任务函数不能带 event 参数**——它是一条到点自动触发的指令，没有「谁发的」这个概念。签名固定为无参：
-> ```python
-> def daily_report():   # 正确：无参
-> def daily_report(event):   # 错误！会报参数不匹配
-> ```
-
-## 7. 事件订阅
+## 五、数据库
 
 ```python
 def register(ctx):
-    ctx.on("message", on_message)                 # 命令未命中时的文本消息
-    ctx.on("member_increase", on_new_member)      # 新成员入群
+    ctx.db_execute("CREATE TABLE IF NOT EXISTS greet_log (uid INTEGER, ts REAL)")
 
-def on_new_member(payload):
-    user_id = payload.get("user_id")
-    ...
+def on_hello(event, match):
+    ctx.db_execute("INSERT INTO greet_log (uid, ts) VALUES (?, ?)", (event.user_id, time.time()))
+    n = ctx.db_query_one("SELECT COUNT(*) AS c FROM greet_log")["c"]
+    ctx.send_msg(group_id=event.group_id, user_id=None, message=f"第 {n} 次打招呼")
 ```
 
-- `ctx.on()` 的 handler 同步异步均可。
-- 事件回调收到的是 **`dict`**（不是 Event 对象），用 `.get("key")` 取值，键不存在返回 `None` 而不是报错。
-- 插件之间也能用 `ctx.emit(name, payload)` / `await ctx.aemit(...)` 自定义事件通信。
-- 常用内置事件见 [架构详解 · 事件总线](../advanced/architecture.md)。具体有哪些事件（消息、通知、成员变动等）取决于你启用的接入端，见 [对接 IM 平台](./connect-im.md)。
+- 建表：插件在 `register` 里 `CREATE TABLE IF NOT EXISTS`（框架不代管你的业务表）；
+- 占位符用 `?`：框架会按数据库方言自动翻译（SQLite `?` ↔ MySQL `%s`）；
+- 复杂写入用 `ctx._framework.db.transaction()` 事务；异步场景用 `db_query_async` 等。
 
-## 8. 拆分多文件与相对导入
+详见[数据库](../advanced/database.md)。
 
-插件做大后必然要拆文件。Zeronus 支持标准 Python 包式的**相对导入**（推荐），也兼容旧的短名绝对导入：
+## 六、配置
 
-```python
-# plugins/chatroom/main.py
-from .ws_server import WsServer     # 推荐：相对导入同目录模块
-from . import utils                # 推荐：导入整个兄弟模块
-from .core.engine import Engine    # 推荐：导入子包模块
-from ws_server import WsServer     # 兼容：旧写法仍可用（短名绝对导入）
-```
-
-:::tip 机制速记
-框架把 `main.py` 加载成一个「合成包」`plugin_<插件名>`（带 `__path__`），子模块同时拥有 `plugin_chatroom.ws_server`（相对导入用）和 `ws_server`（短名导入用）两个名字。**新代码一律用相对导入**，彻底避免多个插件存在同名文件时互相串模块。完整原理见 [插件加载与模块机制](../advanced/loader.md)。
-:::
-
-## 9. 多轮会话
-
-```python
-async def handle_survey(event, match):
-    name = await ctx.wait_for(event, prompt="你叫什么名字？", timeout=60)
-    if name is None:
-        await ctx.asend_msg(..., message="超时了")
-        return
-    # 更复杂的多轮用 async with ctx.create_session(...)
-```
-
-完整用法见 [多轮会话](./session.md)。
-
-## 10. 生命周期钩子
-
-除了 `register(ctx)`，主模块还能定义两个可选钩子：
-
-```python
-def on_loaded(ctx):
-    """插件首次加载 / 完全重载、register 完成后触发一次（适合一次性初始化）"""
-
-def on_unload():
-    """插件被卸载 / 完全重载前触发（关闭线程、连接、文件句柄等清理工作）"""
-```
-
-:::warning 心跳重注册不会触发 on_loaded
-`on_loaded` 只在真正（重新）加载后触发一次，框架用标记位保证不会每次心跳都跑。
-:::
-
-## 11. WebUI 与扩展
+插件配置写在插件自己的 `plugin.yaml`（存放在 `data/plugins_dat/<插件名>/`），在代码里读：
 
 ```python
 def register(ctx):
-    ctx.webui(title="我的面板", entry="index.html", icon="", order=50)        # 管理后台加一个插件页
-    ctx.register_group_extension("sign_days", "签到天数", get_sign_days)       # 群组管理页加一列
-    ctx.register_user_extension("level", "等级", get_user_level)               # 用户管理页加扩展
+    greet = ctx.get_config("greet_text", "Hello")
+
+def on_hello(event, match):
+    ctx.send_msg(group_id=event.group_id, user_id=None, message=ctx.get_config("greet_text"))
 ```
 
-`ctx.override_webui()` 还能让插件整体接管管理后台前端。
+`ctx.get_all_config()` 取全部；后台「插件」页可在线改。
 
-## 12. 日志与审计
-
-```python
-ctx.log("启动完成")
-ctx.log("外部接口超时", level="warning")     # debug/info/warning/error
-ctx.audit_log("sign_in", target_type="user", target_name=str(event.user_id))
-```
-
-## 13. 权限控制
+## 七、权限
 
 ```python
-async def handle_ban(event, match):
-    if not event.has_perm("admin.ban"):      # 权限节点，支持通配符 admin.*
-        await ctx.asend_msg(..., message="权限不足")
+ctx.command("/ban", on_ban, require_perm="greeter.ban")          # 权限节点
+ctx.command("/admin_only", on_admin, require_admin=True)          # 管理员/群主/超管
+ctx.command("/super_only", on_super, require_superuser=True)      # 超管
+
+def on_ban(event, match):
+    if not event.has_perm("greeter.ban.others"):
         return
 ```
 
-`ctx.has_perm(uid, node)` / `ctx.check_perm(uid, node)`（三态）/ `ctx.is_superuser(uid)` / `ctx.get_user_role(g, u)` 等详见 [权限系统](../advanced/permission.md)。
+- 命令级：`require_perm` / `require_admin` / `require_superuser` 任一满足即放行；
+- 事件内：`event.has_perm(node)` / `event.check_perm(node)`（三态）；
+- 非事件场景：`ctx.has_perm(uid, node, context=..., role=...)`。
 
-## 14. 耗时操作别堵住事件循环
+详见[权限系统](../advanced/permission.md)。
 
-图片渲染、文件处理、外部 HTTP 等耗时活，丢到内置线程池后台跑：
+## 八、定时任务
 
 ```python
-def render_and_send():
-    path = renderer.render(...)
-    ctx.send_msg(..., message=f"渲染完成：{path}")
+def register(ctx):
+    ctx.task("0 8 * * *", daily_report, description="每日报表")   # 5 字段 cron
 
-ctx.run_async(render_and_send)   # 返回 concurrent.futures.Future
+def daily_report():
+    ctx.log("跑每日报表")
 ```
 
-## 15. 把插件装上去
+也可用 `ctx.add_job(handler, cron_expression, ...)` / `ctx.remove_job(job_id)` 动态增删。
 
-1. 文件夹建在 `plugins/` 下，名字用英文小写；入口文件必须叫 `main.py`。
-2. 到 Web 面板「插件」页点 **重载**（或重启宿主）。
-3. 发命令测试。
+详见[定时任务](../advanced/scheduler.md)。
 
-**改了代码后**：再点一次「重载」即可，不用重启整个宿主。
+## 九、插件私有数据
 
-**配置 / 数据放哪**：插件的 `_conf_schema.json`、`plugin.yaml` 等配置类文件在加载时会被框架自动迁移到 `data/plugins_dat/<插件名>/`；运行期产生的缓存、用户数据用 `ctx.get_data_dir()` 获取，写进这个目录，**不要写进代码目录**（插件更新覆盖时代户数据会丢）。
+```python
+d = ctx.get_data_dir()                       # data/plugins_dat/greeter/
+ctx.write_file("cache.json", ctx.dump_json(data))
+```
 
-## 16. 常见错误自查
+`ctx.get_data_dir()` 会自动创建目录；`ctx.read_file / write_file / list_dir` 默认只允许写在这个目录内
+（绝对路径需显式 `allow_abs=True`）。
 
-| 现象 | 原因与处理 |
-| ---- | ---- |
-| 插件列表里没有它 | 缺 `register(ctx)` / 目录名带中文 / `main.py` 语法错误 |
-| 命令不触发 | pattern 写错 / 被别的插件抢了（priority） / 没在 `register` 注册 |
-| 发命令没反应但日志报错 | 处理函数抛异常了，加 try/except 或看日志 |
-| 发消息报「无可用协议适配器」 | 当前没有任何就绪的接入端；先按 [对接 IM 平台](./connect-im.md) 启用并连上一个接入端 |
-| 定时任务报参数错误 | 定时函数带了 `event` 参数，改成无参 |
-| 数据库报 SQL 错 | 占位符用错（要用 `%s`） / 表没建（`create_table` 在 `register` 里） |
-| 改了函数逻辑没生效 | 心跳只重注册；函数体改动需在面板点「重载」 |
-| 多插件同名文件互相串 | 改用相对导入 `from .xxx import`，别依赖短名 |
-| handler 里阻塞导致卡顿 | 改 `async def` + 异步 DB/API，耗时活用 `ctx.run_async` |
+## 十、插件要拆多个文件
 
-## 17. 下一步
+多文件插件需要用**相对导入**，框架已用「合成包」机制支持：
 
-- [对接 IM 平台（以 QQ / OneBot 11 为例）](./connect-im.md) —— 让框架真正接入聊天平台
-- [多文件插件与模块机制](../advanced/loader.md) —— 相对导入 / 短名 / 热重载原理
-- [多轮会话](./session.md) —— 交互式对话
-- [配置系统](./configuration.md) —— config.yaml 与插件配置
-- [Event 对象](../api/basic/event.md) / [ctx 全量 API](../api/basic/ctx.md)
-- [定时任务](../advanced/scheduler.md) / [权限系统](../advanced/permission.md)
+```
+plugins/
+└── mytool/
+    ├── main.py
+    └── util.py
+```
+
+```python
+# main.py
+from .util import helper          # 相对导入
+
+def register(ctx):
+    ctx.command("/x", lambda e, m: helper(ctx, e))
+```
+
+> 多文件、嵌套包、短名导入的细节与踩坑见[插件加载与模块机制](../advanced/loader.md)（**多文件插件必读**）。
+
+## 十一、热重载
+
+后台「插件」页点重载，或在终端执行重载命令，框架会：
+
+1. 卸载插件（调用可能的清理、注销命令/事件/扩展点）；
+2. 从磁盘重新加载 `main.py` 与依赖子模块（走源码现场编译，避免旧字节码残留）；
+3. 重新执行 `register(ctx)`。
+
+对应的扩展点：`plugin.unload` / `plugin.load`。
+
+## 十二、调试建议
+
+- 用 `ctx.log("...")` 写日志，后台「日志」页实时可见；
+- 用 `ctx.log(..., level="debug")` + `config.yaml` 里 `log.level: DEBUG` 打开详细日志；
+- 插件内存有上限（`plugin.max_memory_mb`），超限会被自动卸载——注意别在内存里堆积数据；
+- 启动自检：`python main.py` 的横幅会列出已加载的官方扩展与用户插件。
+
+---
+
+延伸阅读：[ctx 完整参考](../api/basic/ctx.md) · [Event 事件对象](../api/basic/event.md) ·
+[扩展点](../api/advanced/hooks.md) · [多轮会话](./session.md) · [最佳实践](./best-practices.md)

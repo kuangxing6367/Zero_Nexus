@@ -12,6 +12,7 @@ webui/vite.config.js.timestamp-*
 # 文档站（VitePress）
 # ============================================================
 docs/node_modules/
+docs/.npm-cache/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/.vitepress/.temp/

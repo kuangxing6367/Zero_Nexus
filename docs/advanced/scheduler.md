@@ -1,107 +1,117 @@
 # 定时任务
 
-> **本篇面向**：角色 B。cron/interval/date 定时任务的注册方式与底层 APScheduler。
+定时任务由官方扩展 `scheduler` 提供（`extensions.yaml` 里 `scheduler.enabled`，默认开），
+底层用 **APScheduler** 的 cron 触发器。
 
-Zeronus 的定时能力由官方插件 `extensions/scheduler`（基于 APScheduler
-`AsyncIOScheduler`）提供，用户插件通过 `ctx.task()` 注册，开箱即用。
-
-## 基本用法：ctx.task()
+## 一、声明一个定时任务
 
 ```python
 def register(ctx):
-    ctx.task("0 8 * * *", daily_report, description="每日 8 点报告")
-    ctx.task("*/5 * * * *", heartbeat, description="每 5 分钟")
-    ctx.task("0 0 1 * *", monthly, description="每月 1 日 0 点")
-    ctx.task("30 9 * * 1-5", weekday, description="工作日 9:30")
+    ctx.task("0 8 * * *", daily_report, description="每日报表")
+
+def daily_report():
+    ctx.log("跑每日报表")
 ```
 
-### cron 表达式
+`ctx.task(cron_expr, executor, description=None)`：
 
-标准 5 段：`分 时 日 月 周`，由 APScheduler `CronTrigger` 解析：
+| 参数 | 说明 |
+| ---- | ---- |
+| `cron_expr` | **5 字段** cron：`分 时 日 月 周` |
+| `executor` | 可调用对象（同步或异步函数都行） |
+| `description` | 说明文本，后台可见 |
 
-| 位置 | 取值 | 例子 |
-|------|------|------|
-| 分 | 0–59、`*/n`、`a,b,c`、`a-b` | `*/30` |
-| 时 | 0–23 | `9` |
-| 日 | 1–31 | `1` |
-| 月 | 1–12 | `*` |
-| 周 | 0–6（0=周一，APScheduler 约定）或 `mon-fri` | `1-5` |
+## 二、cron 表达式速查
 
-:::tip 周字段注意
-APScheduler 的 `day_of_week` 用 `0=monday … 6=sunday`，也接受
-`mon,tue,wed,thu,fri,sat,sun`，和部分 crontab “0=周日”的习惯不同。
-:::
-
-### 处理函数要求
-
-```python
-async def daily_report():           # 同步 def / async def 都支持
-    caller = ctx.services.get("api_caller")   # 需要框架能力时从服务注册表取
-    if caller:
-        await caller.call("send_group_msg", group_id=123456, message="日报")
-    ctx.log("日报已发送")
+```
+┌────────── 分钟 (0-59)
+│ ┌──────── 小时 (0-23)
+│ │ ┌────── 日 (1-31)
+│ │ │ ┌──── 月 (1-12)
+│ │ │ │ ┌── 星期 (0-6，0=周日；也可用 mon..sun)
+│ │ │ │ │
+* * * * *
 ```
 
-- **任务函数无参数**，也不接收 `event/match`；
-- 函数必须定义在插件主模块顶层（调度器按 `handler.__name__` 从主模块取函数对象）；
-- 异步函数直接 await，同步函数在线程中执行；单任务异常被捕获并记录，不影响其他任务；
-- 任务补触发宽限 `misfire_grace_time=600` 秒（进程短暂卡住后，错过 10 分钟内的任务仍补跑一次）。
+| 表达式 | 含义 |
+| ---- | ---- |
+| `*/5 * * * *` | 每 5 分钟 |
+| `0 * * * *` | 每小时整点 |
+| `0 8 * * *` | 每天 08:00 |
+| `0 9 * * mon-fri` | 工作日 09:00 |
+| `30 3 1 * *` | 每月 1 日 03:30 |
 
-## 注册与同步机制
-
-- `register(ctx)` 里声明的任务先写入 `tasks` 表，再注册到 APScheduler；
-- APScheduler 任务 ID 为 `<插件名>:<函数名>`，重复注册 `replace_existing`，
-  因此同一函数多次注册不会产生重复任务；
-- 插件卸载/重载时，属于该插件的任务会被整体移除后按新代码重建；
-- 心跳重新 `register(ctx)` 时同样先清后建，保持代码与调度一致。
-
-## 高级：直接使用底层 APScheduler
-
-`ctx.task()` 只覆盖最常用的 **cron** 触发。需要 interval（固定间隔）、
-date（指定时刻执行一次）等触发器时，可取到底层原生 Scheduler：
+## 三、动态增删任务
 
 ```python
 def register(ctx):
-    scheduler = ctx._core.services.get("scheduler")
-    aps = scheduler._scheduler      # 原生 apscheduler.schedulers.asyncio.AsyncIOScheduler
+    ctx.command("/remind", on_remind)
 
-    from apscheduler.triggers.interval import IntervalTrigger
-    from datetime import datetime
-    from apscheduler.triggers.date import DateTrigger
+def on_remind(event, match):
+    def notify():
+        ctx.send_msg(group_id=event.group_id, user_id=None, message="提醒时间到！")
 
-    aps.add_job(my_job, IntervalTrigger(seconds=30),
-                id="myplugin:poll_30s", replace_existing=True)
-    aps.add_job(once_job, DateTrigger(run_date=datetime(2026, 1, 1, 0, 0)),
-                id="myplugin:once")
+    key = ctx.add_job(notify, "0 9 * * *", description="每日提醒", job_id="remind")
+    ctx.send_msg(group_id=event.group_id, user_id=None, message=f"已创建：{key}")
+
+def on_cancel(event, match):
+    ctx.remove_job("remind")
 ```
 
-底层原生 API（来自 APScheduler）：
+| 方法 | 说明 |
+| ---- | ---- |
+| `ctx.add_job(handler, cron_expression, description='', job_id=None) -> str` | 注册任务，返回任务键 |
+| `ctx.remove_job(job_id)` | 按 id 移除 |
 
-| 方法 | 作用 |
-|------|------|
-| `add_job(fn, trigger, id=..., replace_existing=True)` | 添加任务 |
-| `remove_job(job_id)` | 移除任务 |
-| `pause_job(job_id)` / `resume_job(job_id)` | 暂停 / 恢复 |
-| `reschedule_job(job_id, trigger=..., **kw)` | 修改触发器 |
-| `get_jobs()` | 列出全部任务 |
-| `scheduler.get_jobs()`（封装层） | 返回 `[{id, next_run}]` |
+> `job_id` 缺省取函数名；**相同 id 重复注册会覆盖**。
 
-:::warning 任务 ID 约定
-自己 `add_job` 时请用 `<插件名>:<业务名>` 前缀，这样插件卸载时
-`remove_plugin_tasks` 才能按前缀把它一起清掉，避免“幽灵任务”。
-:::
+## 四、任务状态与后台管理
 
-## 管理接口
+调度器支持暂停 / 恢复：
 
-- Web 面板「定时任务」页可查看任务、下次执行时间并手动启停；
-- 封装层方法：`scheduler.remove_task(job_id)`、`scheduler.get_jobs()`；
-- 孤儿任务（插件已删除但任务残留）会被框架周期性自检清理。
+```
+TaskScheduler.pause_task(task_key)     # 暂停
+TaskScheduler.resume_task(task_key)    # 恢复
+TaskScheduler.remove_job(task_key)     # 移除
+TaskScheduler.remove_plugin_tasks(plugin_name)   # 移除某插件的全部任务
+```
 
-## 注意事项
+后台「任务」页可以查看所有任务、手动触发、暂停/恢复。
 
-:::warning 常见坑
-- 任务函数里不要依赖某次消息的 `event`，任务没有消息上下文；
-- 任务里发消息优先用 `services.get("api_caller")` 或 `ctx.onebot`；
-- 任务要能幂等重跑（补触发/重启后可能立即执行一次）；
-- 长时间不返回的任务会占用 worker，耗时操作请自行拆分或加超时。
-:::
+任务状态（上次执行结果/时间）会写进数据库 `tasks` 表，供后台展示。
+
+## 五、执行语义
+
+- 任务在**主事件循环**里执行；异步函数会被 `await`，同步函数直接调用；
+- 单次执行抛异常只记日志，不会摘掉任务；
+- 插件被禁用/卸载时，其任务会一并移除（`remove_plugin_tasks`）。
+
+## 六、扩展点：任务触发前后
+
+| 扩展点 | 时机 | 参数 |
+| ---- | ---- | ---- |
+| `cron.task.trigger.before` | 任务触发、执行前 | `plugin_name, handler_name` |
+| `cron.task.trigger.after` | 任务执行后 | `plugin_name, handler_name, status` |
+
+```python
+def register(ctx):
+    ctx.hook("cron.task.trigger.after", on_task_done)
+
+async def on_task_done(plugin_name=None, handler_name=None, status=None, **kw):
+    if status != "success":
+        ctx.log(f"任务 {plugin_name}.{handler_name} 异常：{status}", level="error")
+```
+
+手动触发（后台「任务」页）走同一组扩展点。
+
+## 七、实践建议
+
+- **别把长任务塞在 cron 里**：任务和消息共用一个事件循环，长阻塞会拖慢一切；
+  重活请 `ctx.run_async(...)` 或丢到线程池 / 独立进程；
+- **幂等**：任务可能因为重启等原因被重复触发，逻辑要能重复执行；
+- **用任务做健康检查**：结合 `cron.task.trigger.after` 的 `status` 做失败告警；
+- **时区**：按服务器本地时间调度；容器里注意设置 `TZ`。
+
+---
+
+延伸：[扩展点](../api/advanced/hooks.md) · [数据库](./database.md) · [ctx 定时任务](../api/basic/ctx.md#十定时任务与任务调度)

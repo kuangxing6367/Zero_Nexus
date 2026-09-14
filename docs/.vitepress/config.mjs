@@ -5,7 +5,7 @@ import { defineConfig } from 'vitepress'
 // 若改回项目页托管（https://kuangxing6367.github.io/Zero_Nexus/），把 base 改成 '/Zero_Nexus/'
 export default defineConfig({
   title: 'Zeronus',
-  description: '事件驱动的插件化服务宿主',
+  description: '微内核式事件驱动服务宿主',
   lang: 'zh-CN',
   base: '/',
   cleanUrls: true,
@@ -42,7 +42,7 @@ export default defineConfig({
           ]
         },
         {
-          text: '开发插件',
+          text: '开发',
           items: [
             { text: '编写插件', link: '/guide/writing-plugins' },
             { text: '多轮会话', link: '/guide/session' },
@@ -57,7 +57,7 @@ export default defineConfig({
             { text: 'API 总览', link: '/api/' },
             { text: 'PluginContext (ctx)', link: '/api/basic/ctx' },
             { text: 'Event 事件对象', link: '/api/basic/event' },
-            { text: 'Framework 核心', link: '/api/basic/framework' },
+            { text: 'Framework 内核', link: '/api/basic/framework' },
             { text: '服务注册表（DI）', link: '/api/basic/services' }
           ]
         },
@@ -74,13 +74,13 @@ export default defineConfig({
           text: '进阶主题',
           items: [
             { text: '架构总览', link: '/advanced/architecture' },
-            { text: '包管理器 zkg', link: '/advanced/zkg' },
             { text: '插件加载与模块机制', link: '/advanced/loader' },
+            { text: '包管理器 zkg', link: '/advanced/zkg' },
             { text: '数据库', link: '/advanced/database' },
             { text: '权限系统', link: '/advanced/permission' },
             { text: '定时任务', link: '/advanced/scheduler' },
             { text: '部署上线', link: '/advanced/deployment' },
-            { text: '双核心架构（实验）', link: '/advanced/dual-core' }
+            { text: '双核心（实验）', link: '/advanced/dual-core' }
           ]
         }
       ]

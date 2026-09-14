@@ -1,90 +1,91 @@
 # 安装
 
-> **本篇面向**：角色 A（想把 Zeronus 跑起来的使用者）。按步骤操作即可，无需编程基础。
-
 ## 环境要求
 
-- Python 3.10 或更高版本（开发验证环境为 3.10–3.14）；
-- 操作系统：Windows / Linux / macOS；
-- （可选）一个 IM 平台的接入端：框架协议无关，默认内置 `onebot_adapter`（OneBot 11，常用于接入 QQ）。
-  只有「要和一个聊天软件收发消息」时才需要它；纯定时任务 / HTTP 事件注入场景可以完全不接 IM 平台。
-  如何对接见 [对接 IM 平台](./connect-im.md)。
+| 项目 | 要求 |
+| --- | --- |
+| Python | **3.8+**（推荐 3.10 ~ 3.13） |
+| 操作系统 | Windows / Linux / macOS 均可 |
+| 数据库 | 默认 SQLite（零配置）；可选 MySQL（自动装驱动） |
+| Node.js | **仅**在你要自己构建后台前端（`webui/`）时需要；直接跑框架不需要 |
 
-## 下载代码
+## 一、拿到代码
 
 ```bash
 git clone https://github.com/kuangxing6367/Zero_Nexus.git
-cd zernus
+cd Zero_Nexus
 ```
 
-## 创建虚拟环境（推荐）
-
-```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# Linux / macOS
-source .venv/bin/activate
-```
-
-## 安装依赖
+## 二、安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-核心依赖包括 `websockets`（协议连接）、`flask` + `waitress`（管理后台）、
-`apscheduler`（定时任务）、`bcrypt`（密码哈希）、`psutil`（内存监控）等。
+`requirements.txt` 里的都是框架与官方扩展的常用依赖：
 
-:::tip 依赖会自愈
-即使跳过手动安装，启动时 `main.py` 也会自检 `requirements.txt`，
-缺失的依赖会走内置镜像源（清华→阿里→豆瓣→官方）自动补装；
-插件自己的依赖在加载时也会按 `requirements.txt` 自动安装。
-:::
+| 依赖 | 用在哪 |
+| --- | --- |
+| `websockets` | OneBot 反向 WS 接入端 |
+| `apscheduler` | 定时任务 |
+| `flask` / `flask-cors` | Web 后台与 REST API |
+| `waitress` | 生产级 WSGI 服务器（Web 默认用它） |
+| `pyyaml` | 配置读写 |
+| `bcrypt` | 管理员口令哈希 |
+| `requests` / `psutil` | 系统信息、出站请求 |
 
-MySQL 用户额外需要 `pymysql`、`DBUtils`（切换到 MySQL 时框架会提示/自动安装）。
+MySQL 驱动（`pymysql` / `DBUtils`）**不需要手动装**：检测到 MySQL 配置时框架会自动安装。
 
-## 目录结构
+> 首次启动还有一层**依赖自检**：扫描 `requirements.txt`，发现缺失会走清华源自动补齐，
+> 所以在干净机器上直接 `python main.py` 通常也能跑起来。
 
-```
-zernus/
-├── main.py                 # 启动入口（python main.py [自定义配置路径]）
-├── config.yaml             # 全局配置（首次启动自动生成）
-├── requirements.txt        # 核心依赖
-├── core/              # 极简内核（加载器/路由/事件/上下文/协议抽象/数据库…）
-├── extensions.yaml       # 官方插件配置中心（开关/配置，启动自动扫描同步）
-├── extensions/           # 官方插件（在 extensions.yaml 开关）
-│   ├── onebot_adapter/     #   OneBot 11 接入端（反向 WebSocket，可选，默认开）
-│   ├── webui/              #   Web 管理后台（默认开）
-│   ├── session/            #   多轮会话管理器（默认开）
-│   ├── scheduler/          #   定时任务调度器（默认开）
-│   ├── http_inject/        #   HTTP 事件注入接入端（默认关）
-│   └── http_api/           #   独立对外 HTTP API（默认关）
-├── plugins/                # 用户插件（每个一个子目录，含 main.py）
-├── data/                   # 运行数据（自动创建）
-│   ├── logs/               #   日志
-│   └── plugins_dat/        #   各插件的配置/缓存/私有数据
-├── web/                    # 管理后台默认前端静态资源
-├── sql/                    # 数据库脚本
-├── tests/                  # 自测脚本
-└── docs/                   # 本文档
+## 三、一键脚本（可选）
+
+`start.sh` 会自动建 venv、装依赖、启动：
+
+```bash
+bash start.sh
 ```
 
-## 启动
+## 四、目录一览
+
+```
+.
+├── main.py              # 启动入口：python main.py [自定义配置路径]
+├── config.yaml          # 主配置（首次启动生成）
+├── extensions.yaml      # 官方扩展配置中心
+├── core/                # 内核（不含任何 OneBot 实现）
+├── extensions/          # 官方扩展
+├── plugins/             # 用户插件
+├── web/  webui/         # 后台前端产物 / 源码
+├── sql/                 # 建表 SQL
+├── data/                # 运行时数据（数据库、日志、插件私有数据）
+└── docs/                # 本文档
+```
+
+## 五、首次启动
 
 ```bash
 python main.py
 ```
 
-首次启动会生成 `config.yaml`、`extensions.yaml` 与 `data/` 目录。下一步见
-[开始使用](./getting-started.md)；要接入聊天平台见 [对接 IM 平台](./connect-im.md)。
+看到启动横幅（版本 / 进程模式 / 数据目录 / 数据库 / 已加载扩展 / 监听端口）即成功。
+默认端口：WebUI `127.0.0.1:8080`、OneBot 反向 WS `0.0.0.0:6830`。
 
-## 升级
+`config.yaml` 与 `data/` 会在首次启动时自动生成。
+
+## 六、升级
 
 ```bash
 git pull
-pip install -r requirements.txt   # 补全新依赖
+pip install -r requirements.txt
+python main.py
 ```
 
-插件配置、数据库都在 `data/` 下，升级代码不会清空；插件更新时
-`plugins/<名>/` 下的配置文件会自动迁移到 `data/plugins_dat/<名>/`。
+- 数据库表结构会在启动时自动补齐；
+- 用户插件放在 `plugins/`，升级框架不会覆盖；插件私有数据在 `data/plugins_dat/`，同样保留；
+- `config.yaml` 与 `extensions.yaml` 属于你的本地配置，升级不会覆盖。
+
+---
+
+下一步：[开始使用](./getting-started.md)。

@@ -1,126 +1,157 @@
 # 权限系统
 
-> **本篇面向**：角色 B。LuckPerms 风格权限节点、组、继承与上下文的完整机制。
+Zeronus 内置一套 **LuckPerms 风格**的权限引擎（`core/perm/`），无第三方依赖。
 
-Zeronus 内置一套 LuckPerms 风格的权限系统（`core/perm.py`）：
-**节点（node）+ 权限组（group）+ 继承（inherit）+ 上下文（context）+ 三态判定**，
-同时保留一条独立的“身份轴”（群主/管理员/超管）。
-
-## 两条互相平行的轴
-
-| 轴 | 取值/形式 | 用途 |
-|----|-----------|------|
-| 身份轴 `event.role` | `super > owner > admin > member > blacklist` | 粗粒度判断是不是管理员/超管/黑名单 |
-| 权限组轴 `event.has_perm(node)` | 节点字符串，如 `sign.admin`、`chat.*` | 细粒度、可配置、可继承的功能授权 |
-
-命令上的 `require_admin` / `require_superuser` 走身份轴；`require_perm` 走权限组轴，
-两者可叠加（同时满足）。
-
-## 基本概念
+## 一、核心概念
 
 | 概念 | 说明 |
-|------|------|
-| 权限节点 | 点分字符串，如 `sign_in.use`、`admin.ban`；支持 `chat.*`、`*` 通配 |
-| 权限组 | 节点的集合，带 `weight`（权重，决定主组）与显示前后缀 |
-| 继承 | 组可以继承其他组，权限随继承链展开（子组拥有父组全部节点） |
-| 用户节点 | 直接授予/否决某个用户的节点，优先级高于组 |
-| 上下文 | 节点可限定生效范围，如仅某个群、某种消息类型、某个 bot |
-| 三态 | `True` 授予 / `False` 显式否决 / `None` 未定义（按拒绝处理） |
+| ---- | ---- |
+| **节点（node）** | 权限点，如 `mytool.ban`。**三态**：允许 / 拒绝 / 未设置 |
+| **权限组（group）** | 一组节点的集合，有权重、可继承、可按上下文生效 |
+| **用户直节点** | 直接授给某个用户的节点，优先于组 |
+| **上下文（context）** | 节点生效的条件，键为 `group`（群）/ `bot`（实例）/ `msgtype`（消息类型） |
+| **轨道（track）** | 组的晋升顺序（如 新人群 → 活跃群 → 管理群），支持按轨道升降级 |
+| **时效（expire_at）** | 节点/组可带过期时间 |
+| **审计（audit）** | 每次变更都会写审计日志 |
 
-### 内置角色组
+## 二、内置角色组
 
-框架内置四个角色组，随 `event.role` 自动加入，自带对应节点：
+框架虚拟注入四个内置组（**不入库**，防止误删），按角色自动映射：
 
-| 内置组 | 权重 | 自带节点 | 继承 |
-|--------|------|----------|------|
-| `__member`（成员） | 0 | `zernus.role.member` | — |
-| `__admin`（群管理） | 20 | `zernus.role.admin` | `__member` |
-| `__owner`（群主） | 30 | `zernus.role.owner` | `__admin` |
-| `__super`（超管） | 100 | `zernus.role.super` | `__owner` |
+| 内置组 | 权重 | 继承自 | 对应角色节点 |
+| ---- | ---- | ---- | ---- |
+| `__member` | 0 | — | `zernus.role.member` |
+| `__admin` | 20 | `__member` | `zernus.role.admin` |
+| `__owner` | 30 | `__admin` | `zernus.role.owner` |
+| `__super` | 100 | `__owner` | `zernus.role.super` |
 
-因此命令的 `require_level='admin'` 等价于检查节点 `zernus.role.admin`。
-此外每个用户默认属于 `default` 组，可把“所有人都能用”的公共节点放进该组。
+因为继承是链式的，**超管自动拥有群主/管理/成员的一切权限**。
 
-## 在插件中使用
+角色 → 组的映射：`member → __member`、`admin → __admin`、`owner → __owner`、`super → __super`。
 
-### 方式一：命令声明式
+## 三、解析顺序
 
-```python
-ctx.command("/ban", handle_ban,
-            require_admin=True,             # 身份轴：管理员及以上
-            require_perm="admin.ban")        # 权限组轴：还需该节点
+用户在某个上下文下的权限这样算出来：
+
+```
+用户直节点
+  → 默认组 + 内置角色组
+  → 继承展开（沿链拿到全部祖先组）
+  → 按 weight 降序
+  → 收集各来源的节点（用户来源优先）
+  → 构造 PermissionSet
 ```
 
-需要“满足 A 或 B”这类组合时，不要堆参数，在 handler 内自行判断。
+结果带 **TTL 进进程缓存**（默认 60s）；后台改权限会自动失效对应缓存。
 
-### 方式二：handler 内判断
+## 四、插件里怎么用
+
+### 命令级声明（最常用）
 
 ```python
-async def handle_ban(event, match):
-    # 事件上直接判（带当前群/bot 上下文，结果有缓存）
-    if not event.has_perm("admin.ban"):
-        await ctx.asend_msg(..., message="权限不足")
+ctx.command("/ban", on_ban, require_perm="mytool.ban")     # 需要权限节点
+ctx.command("/admin", on_admin, require_admin=True)         # 需要管理员/群主/超管
+ctx.command("/super", on_super, require_superuser=True)     # 需要超管
+```
+
+任一满足即放行；`require_superuser` 优先于 `require_admin`。
+
+### 事件内查询
+
+```python
+def on_cmd(event, match):
+    if not event.has_perm("mytool.ban.others"):
         return
-
-    # 三态查询
-    state = event.check_perm("admin.ban")   # True / False / None
-
-    # 查看权限组信息
-    event.perm_groups                       # 生效权限组列表
-    event.primary_group                     # 权重最高的非内置组
+    mode = event.check_perm("mytool.ban")     # 三态：True / False / None
+    groups = event.perm_groups                # 命中的组
 ```
 
-### 方式三：脱离事件用 ctx 查询
+| 成员 | 说明 |
+| ---- | ---- |
+| `event.has_perm(node)` | 是否「允许」 |
+| `event.check_perm(node)` | 三态：允许 / 拒绝 / 未设置 |
+| `event.perms` | 权限快照（`PermissionSet`） |
+| `event.perm_groups` / `event.primary_group` | 命中的组 / 主组 |
+
+### 非事件场景（如定时任务）
 
 ```python
-ctx.has_perm(user_id, "myplugin.use", context={"group": "123456"})
-ctx.check_perm(user_id, "myplugin.use")     # 三态
-ctx.user_groups(user_id)                    # 生效组列表
-ctx.is_superuser(user_id)
-ctx.get_user_role(group_id, user_id)
+ctx.has_perm(user_id, "mytool.ban", context={"group": gid})
+ctx.check_perm(user_id, "mytool.report")
+ctx.user_groups(user_id)
 ```
 
-`context` 形如 `{'group': '群号', 'bot': '实例名', 'msgtype': 'group'}`；
-`event.has_perm` 会自动从事件构造该上下文。
+## 五、组与节点的管理
 
-## 节点匹配与优先级
-
-- 精确匹配优先于通配；`chat.*` 命中 `chat.ban`、`chat.image` 等；`*` 命中一切；
-- **显式否决（False）优先于授予（True）**：父组授予 `chat.*` 但用户被显式
-  否决 `chat.ban` 时，以否决为准；
-- 用户节点优先于组节点，近的上下文优先于全局。
-
-## 上下文限定示例
-
-同一节点可以只在某个群授予：在 Web 面板为用户/组添加节点时选择上下文为指定群，
-则该节点只在该群事件中生效，其他群按未定义处理。这让“某用户在 A 群是管理、
-在 B 群是普通成员”成为可能。
-
-## 晋升轨道（Track）
-
-权限组可以编排成“轨道”，用户沿轨道 `promote`（晋升）/ `demote`（降级），
-适合等级、活跃度体系（底层 API 位于 `core/perm.py`，可在插件中调用）：
+后台「权限」页可视化操作；也可以用 `core/perm` 的函数（`ctx._framework.db` 作 db）：
 
 ```python
-from core import perm
-perm.save_track(db, "活跃度", ["newcomer", "regular", "vip"])
-perm.promote(db, user_id, "活跃度", ctx_key="group", ctx_val="123456")
-perm.demote(db, user_id, "活跃度")
+from core.perm.groups import create_group, update_group, delete_group, list_groups
+from core.perm.nodes import set_group_node, unset_group_node, set_user_node, list_user_nodes
+from core.perm.tracks import save_track, list_tracks
+
+create_group(db, "vip", display_name="VIP", weight=50)
+set_group_node(db, "vip", "mytool.vip_only", value=True)
+set_group_node(db, "vip", "mytool.beta", value=False, ctx_key="group", ctx_val="10086")  # 上下文
+set_user_node(db, "123456", "mytool.debug")                                             # 用户直授
+
+rows = list_user_nodes(db, 123456)
 ```
 
-## 时效性与清理
+> 组名不能以 `__` 开头（`__` 前缀为内置组保留）。
 
-节点/组成员关系支持设置过期时间；框架内置定时任务每小时清理一次过期权限
-（`perm.cleanup_expired(db)`），到期自动失效，无需手动维护。
+## 六、三态语义
 
-## Web 管理
+| 值 | 含义 |
+| ---- | ---- |
+| `True` | 允许 |
+| `False` | **拒绝**（可用于在更大范围内屏蔽某个节点） |
+| 未设置 | 不表态，继续向上/向外查找 |
 
-在管理后台「权限管理」页可可视化完成：
+同一节点在多处出现时，按「用户来源优先 → weight 降序」取第一个表态的结果。
 
-- 创建/编辑/删除权限组，设置权重、前后缀、继承关系；
-- 为用户分配/移除权限组；
-- 授予或否决具体节点（可限定群/bot 上下文、设置有效期）；
-- 配置晋升轨道、查看审计记录。
+## 七、轨道（track）
 
-所有权限变更都会写审计日志；解析结果带短 TTL 缓存，变更后会自动失效重建，
-兼顾性能与实时性。
+轨道把多个组排成一条晋升线，支持一键沿轨道升级/降级用户：
+
+```python
+save_track(db, "staff", ["vip", "moderator", "admin"], display_name="管理晋升线")
+```
+
+后台「权限 → 轨道」页可直接操作。
+
+## 八、审计
+
+所有权限变更都会写审计日志（`audit_logs` 表），可在后台「日志」页按类型筛选查看。
+插件自己写审计用 `ctx.audit_log(action, target_type=..., detail=...)`。
+
+```python
+ctx.audit_log("reset_data", target_type="user", target_name=str(uid), detail={"by": "plugin"})
+```
+
+## 九、缓存与刷新
+
+```python
+from core.perm.cache import invalidate_user, invalidate_groups, invalidate_all
+
+invalidate_user(user_id)     # 用户相关缓存失效
+invalidate_groups()          # 组结构变化后失效
+invalidate_all()             # 全清
+```
+
+框架在后台改动后会自动调用，通常无需手动干预。事件对象上的角色缓存同理，
+必要时可用 `core.messaging.event.invalidate_user_role_cache(uid)`。
+
+## 十、数据表
+
+| 表 | 存什么 |
+| ---- | ---- |
+| `perm_groups` | 权限组（weight / prefix / suffix / is_default） |
+| `perm_group_nodes` / `perm_user_nodes` | 组 / 用户节点（含上下文与时效） |
+| `perm_tracks` | 晋升轨道 |
+| `audit_logs` | 审计日志 |
+| `admin_users` | 后台管理员（含角色 super / admin） |
+
+---
+
+延伸：[Event 权限查询](../api/basic/event.md#四权限查询) · [数据库](./database.md) · [扩展点](../api/advanced/hooks.md)

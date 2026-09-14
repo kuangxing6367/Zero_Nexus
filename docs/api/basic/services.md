@@ -1,98 +1,97 @@
-# ServiceRegistry 服务注册表
+# 服务注册表（DI）
 
-> **本篇面向**：角色 B/C。理解内核与官方插件如何通过服务注册表解耦、如何取用官方能力。
+> **面向**：想复用官方扩展能力、或想写一个可被他人复用的服务的开发者。
 
-服务注册表（`core/protocol.py → ServiceRegistry`）是框架核心与官方插件之间的
-解耦层：核心不直接 import 官方插件，官方插件在 `register(ctx)` 时把能力“注册”进来，
-用户插件按需“取用”。
+内核**不直接 import 官方扩展**。扩展启动时把自己的能力注册进**服务注册表**，其余代码通过
+`framework.services.get(name)` 取用——这就是 Zeronus 的解耦方式。
 
-## 为什么需要它
+## 一、为什么需要它
 
-像“调用 OneBot 发消息”这种能力由 `extensions/onebot_adapter` 提供，
-而该插件可以被禁用。直接 import 会造成硬依赖；通过服务注册表，插件可以
-优雅降级：服务在就用，不在就提示“部分功能不可用”。
+```
+        ┌─────────────── core/ 内核 ───────────────┐
+        │  PluginContext ──▶ services.get('...')   │
+        └───────────────────────┬──────────────────┘
+                                │ 只认「名字 + 契约」
+        ┌───────────────────────┼───────────────────┐
+        ▼                       ▼                   ▼
+  onebot_adapter 注册         scheduler 注册       webui 注册
+  'api_caller'/'onebot_api'  'scheduler'         'web_server'
+```
 
-## API
+好处：关掉某个扩展，取用方只是拿不到服务（可以降级），不会因为 import 失败而崩。
+内核与扩展之间只有一条稳定边界。
+
+## 二、内置服务名
+
+| 服务名 | 提供方 | 说明 |
+| ---- | ---- | ---- |
+| `api_caller` | 接入端（onebot_adapter / http_inject …） | 协议无关的「动作调用」契约：`call` / `acall` |
+| `onebot_api` | onebot_adapter | OneBot 11 动作封装（`ctx.onebot` 底层） |
+| `protocol_adapter` | 接入端 | 协议适配器实例 |
+| `ws_server` | onebot_adapter | 反向 WS 服务端（连接管理、已连实例列表） |
+| `web_server` | webui | Web 后台服务 |
+| `scheduler` | scheduler | 定时任务调度器 |
+| `session_manager` | session | 会话管理器 |
+| `http_api` | http_api | 独立对外 REST API |
+
+## 三、取用服务
+
+```python
+def register(ctx):
+    sm = ctx._framework.services.get('session_manager')
+    if sm is None:
+        ctx.log("未启用 session 扩展，功能降级", level="warning")
+        return
+    ...
+```
+
+日常里**大部分服务都有更友好的封装**，优先用封装：
+
+| 想做的事 | 用 |
+| ---- | ---- |
+| 发消息 / 调动作 | `ctx.send_msg` / `ctx.api` |
+| 定时任务 | `ctx.task` / `ctx.add_job` |
+| 多轮会话 | `await ctx.wait_for` |
+| OneBot 专用动作 | `ctx.onebot.*` |
+
+## 四、注册自己的服务
+
+官方扩展在 `register(ctx)` 里注册：
+
+```python
+def register(ctx):
+    fw = ctx._framework
+    fw.services.register('my_service', MyService())
+    ctx.log("已注册服务 my_service")
+```
+
+注册会触发扩展点 `service.register.before` / `service.register.after`（可用于审计 / 观察）。
+
+## 五、注册表 API
 
 | 方法 | 说明 |
-|------|------|
-| `services.register(name, service)` | 注册（重复注册会覆盖并告警），一般只有官方插件用 |
-| `services.get(name, default=None)` | 取服务，**不存在或被禁用时返回 None** |
-| `services.has(name) -> bool` | 是否注册过（注意：禁用的官方插件会注册 `None`，判空更稳妥） |
-| `services.remove(name)` | 移除服务 |
-| `services.all() -> dict` | 全部服务的副本 |
+| ---- | ---- |
+| `register(name, service)` | 注册（同名会覆盖并告警） |
+| `get(name, default=None)` | 取用 |
+| `has(name) -> bool` | 是否存在 |
+| `remove(name)` | 移除 |
+| `all() -> dict` | 全部服务快照 |
 
-在插件里通过 `ctx._core.services` 访问：
+## 六、`api_caller` 契约（写接入端必读）
 
-```python
-services = ctx._core.services
-api = services.get("api_caller")
-if api is None:
-    ctx.log("协议适配器未启用", level="warning")
-```
-
-## 内置服务清单
-
-| 服务名 | 提供者 | 类型/能力 |
-|--------|--------|-----------|
-| `protocol_adapter` | 当前接入端（onebot_adapter / http_inject / 双进程 IPC） | `ProtocolAdapter` 实现，协议层抽象 |
-| `api_caller` | 当前接入端 | 通用动作调用器，`.call(action, **kw)` / `.acall(...)` |
-| `onebot_api` | onebot_adapter | 面向对象的 OneBot API 封装（即 `ctx.onebot`）；接入端未注册时由协议无关 `ActionProxy` 兜底 |
-| `ws_server` | onebot_adapter | 反向 WebSocket 服务端实例 |
-| `scheduler` | scheduler | APScheduler 封装（`add_plugin_task`、`get_jobs` 等） |
-| `session_manager` | session | 多轮会话管理器（支撑 `ctx.wait_for/create_session`） |
-| `web_server` | webui | 管理后台 Web 服务 |
-| `http_api` | http_api | 独立 HTTP API 服务（默认关闭） |
-
-:::warning 禁用的服务会注册为 None
-官方插件被 `extensions.xxx: false` 关闭时，会用 `None` 占位注册。
-因此判断“能不能用”请用 `if services.get("scheduler"):`，
-而不是只看 `services.has("scheduler")`。
-:::
-
-## 典型用法
-
-### 1. handler 里直接用 ctx 快捷封装（首选）
-
-绝大多数场景 `ctx.send_msg / ctx.aapi / ctx.task / ctx.wait_for` 已经够用，
-不需要直接碰服务注册表。
-
-### 2. 任务函数等没有 ctx 的场景
-
-定时任务函数不接收参数，需要能力时从服务取：
+接入端只要把实例注册为 `api_caller`，就自动满足 `ctx.api()` / `ctx.aapi()`：
 
 ```python
-def daily_report():
-    caller = ctx._core.services.get("api_caller")
-    if caller:
-        caller.call("send_group_msg", group_id=123456, message="日报")
+class MyAdapter:
+    async def call_api(self, action: str, bot: str = None, **params) -> dict:
+        """真正执行动作，返回 OneBot 风格的结果字典 {status, retcode, data?}"""
+        ...
 ```
 
-### 3. 等服务就绪后再初始化
-
-插件加载顺序不保证官方服务已就绪，监听加载完成事件最稳妥：
-
-```python
-def register(ctx):
-    ctx.on("system.plugin.loaded", on_all_loaded)
-
-def on_all_loaded(_payload):
-    if ctx._core.services.get("api_caller"):
-        ctx.log("协议层已就绪")
-```
-
-## 注册自定义服务（高级）
-
-如果你的插件本身就是“基础设施提供方”，也可以注册服务供别的插件使用：
-
-```python
-def register(ctx):
-    ctx._core.services.register("my_cache", MyCache())
-```
-
-取用方约定好服务名与接口契约即可；插件卸载时记得
-`services.remove("my_cache")`（可在 `on_unload` 中处理）。
+基类 `ProtocolAdapter` 已提供 `call`（同步，自动桥接到主事件循环）与 `acall`（异步）两个包装，
+并在前后触发 `action.before` / `action.after` 扩展点——你只需实现 `call_api`。
+详见[协议适配器](../advanced/protocol_adapter.md)。
 
 ---
 
-> 想在这些能力之外插入自己的行为？见 [扩展点（Hook 系统）](../advanced/hooks.md)：在启动/关闭、Web 请求、事件分发、命令执行、协议动作、出站文本等几乎每个运行环节挂接逻辑。
+延伸：[Framework 内核](./framework.md) · [协议适配器](../advanced/protocol_adapter.md) · [扩展点](../advanced/hooks.md)

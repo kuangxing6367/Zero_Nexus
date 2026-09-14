@@ -1,72 +1,87 @@
 # 开始使用
 
-> **本篇面向**：刚把宿主跑起来的使用者。先确认能启动，再按你的目标选一条路线。
-
-## 启动框架
+## 一、启动
 
 ```bash
 python main.py
-# 也可以指定配置文件：python main.py D:\config\zernus.yaml
 ```
 
-看到类似输出表示启动成功：
+启动后会打印结构化横幅，确认这几项即可：
 
 ```
-==================================================
-Zeronus 框架 启动中...
-==================================================
-官方插件 [onebot_adapter] 已加载
-官方插件 [scheduler] 已加载
-官方插件 [session] 已加载
-官方插件 [webui] 已加载
-已加载 8 个用户插件: ['echo', 'help', ...]
-框架启动完成，等待事件...
+ Zeronus v0.0.1-beta.0-alpha.0
+ 进程模式: 单进程 (standard)
+ 数据目录 : <项目>/data
+ 数据库   : SQLite → data/zernus.db
+ 官方插件 : 5 个 → image_renderer, onebot_adapter, scheduler, session, webui
+ 用户插件 : 0 个 → (无)
+ 监听端口 :
+   - OneBot WS : 0.0.0.0:6830
+   - WebUI      : http://127.0.0.1:8080
 ```
 
-最后一行 `框架启动完成，等待事件...` 出现后，框架开始监听接入端连接（如果启用了接入端）和定时任务。启动日志同时写入 `data/logs/zernus.log`。
+> 首次启动会自动生成 `config.yaml`、建表（`data/zernus.db`），并在缺依赖时自动补齐。
 
-## 选一条路线
+## 二、进入 Web 管理后台
 
-框架不绑定任何平台，三种常见用法任选：
+浏览器打开 **<http://127.0.0.1:8080>**。
 
-| 路线 | 说明 | 需要接入端吗 |
-| ---- | ---- | ---- |
-| 对接聊天平台 | 在 QQ / Telegram 等平台收发消息，跑你写的命令型插件 | 需要，见 [对接 IM 平台](./connect-im.md) |
-| 纯定时服务 | 到点自动执行任务（日报、健康检查、推送） | 不需要 |
-| HTTP 事件注入 | 外部系统通过 HTTP 把事件推进框架，触发插件逻辑 | 不需要（用 `http_inject` 官方插件） |
+默认管理员账号（首次启动自动创建）：
 
-**只想收发消息？** 跳到 [对接 IM 平台](./connect-im.md) 把连接打通，回来发 `/echo 你好` 验证即可。
+| 用户名 | 密码 | 角色 |
+| --- | --- | --- |
+| `admin` | `admin123` | super |
 
-**不接任何平台？** 保持 `extensions.yaml` 里 `onebot_adapter.enabled: false`，用定时任务或 HTTP 注入即可。例如开启 `http_inject` 后向 `http://127.0.0.1:8901/hook` POST 一个事件 JSON，就能触发 `message` 类插件逻辑，方便做自动化与联调。
+> **生产环境请立刻在「设置 → 管理员」里改密码。**
 
-## 第一次对话（已对接平台时）
+后台里可以做：看仪表盘、装/卸扩展、管命令与别名、管权限组与用户、看日志、改配置、管接口令牌（API Key）、重启框架。
 
-在接入的平台上向机器人发送：
+## 三、接入 IM 平台（可选）
 
+Zeronus 不直接连平台，需要 OneBot 实现端以**反向 WebSocket** 连入。以 NapCat / Lagrange 为例：
+
+1. 在 `extensions.yaml` 确认 `onebot_adapter` 为 `enabled: true`（默认开），监听 `0.0.0.0:6830`；
+2. 在 NapCat / Lagrange 里添加反向 WS 地址：`ws://<服务器IP>:6830/onebot/v11/ws`；
+3. 连接成功后，向机器人发消息即可。
+
+**不想接 IM 也能用**：在 `extensions.yaml` 里开启 `http_inject`，就能用 HTTP 把事件推进来：
+
+```bash
+curl -X POST http://127.0.0.1:8901/hook \
+     -H 'Content-Type: application/json' \
+     -d '{"type":"message","user_id":10001,"message":"/hello"}'
 ```
-/echo 你好
+
+事件会被归一化成统一的事件对象，进入同一个内核——命令、会话、权限都照常工作。
+
+详见[对接 IM 平台](./connect-im.md)。
+
+## 四、装一个插件
+
+用户插件放在 `plugins/<名字>/`，入口 `main.py`：
+
+```python
+# plugins/greeter/main.py
+def register(ctx):
+    ctx.command("/hello", on_hello, description="打个招呼")
+
+def on_hello(event, match):
+    ctx.send_msg(group_id=event.group_id, user_id=None, message="Hello, World!")
 ```
 
-机器人回复 `你好` 即链路正常。`/help`（或 `/帮助`、`/菜单`）可查看命令列表。
+放好后在后台「插件」页启用，或重启框架。
 
-## Web 管理面板
+## 五、常用端到端检查
 
-浏览器访问 `http://127.0.0.1:8080`（地址端口以 `extensions.yaml → webui` 为准），默认账号：
+- 后台能打开、能登录 → Web 与鉴权正常；
+- 「插件」页能看到官方扩展与你的用户插件 → 加载器正常；
+- 发 `/hello` 有回执 → 接入端到命令链路正常；
+- 「日志」页实时刷新 → 日志代理正常。
 
-- 用户名：`admin`
-- 密码：`admin123`
+## 六、停止
 
-面板里可以：启用 / 禁用 / 重载插件、管理命令与定时任务、管理用户 / 群组权限、查看仪表盘与日志、在线编辑插件配置。
+前台运行时按 `Ctrl+C`；框架会依次停掉 Web、接入端、调度器并落日志。
 
-:::warning 首次登录必做
-登录后立即到个人设置修改默认密码；若面板需要公网访问，
-把 `web.host` 保持在 `127.0.0.1` 并通过反向代理暴露，同时设置好接入端的 `access_token` 与 IP 白名单。
-:::
+---
 
-## 下一步
-
-- [编写你的第一个插件](./writing-plugins.md)
-- [对接 IM 平台（以 QQ / OneBot 11 为例）](./connect-im.md)
-- [多文件插件与模块导入机制](../advanced/loader.md)
-- [配置详解](./configuration.md)
-- [部署上线](../advanced/deployment.md)
+下一步：[配置系统](./configuration.md) ／ [编写插件](./writing-plugins.md)。

@@ -1,133 +1,145 @@
 # 数据库
 
-> **本篇面向**：角色 B。插件如何建表、CRUD、事务，以及 SQLite/MySQL 双方言自动适配。
+Zeronus 内置一套**双方言**数据库抽象：SQLite（默认，零配置）与 MySQL 共用同一套 API，
+SQL 由框架按方言自动翻译。
 
-Zeronus 支持 SQLite（默认，零配置）与 MySQL，上层使用同一套接口，
-插件基本不需要感知当前是哪种数据库。
+## 一、两种模式
 
-- 数据库封装：`core/db.py` 的 `Database` 类；
-- 启动自动建表/迁移：`core/init_db.py` 的 `auto_init_database(db)`；
-- 配置见 [配置系统](../guide/configuration.md#数据库)。
+```yaml
+# config.yaml
+database:
+  type: sqlite                 # 默认
+  path: data/zernus.db
+```
 
-## 自动初始化
+```yaml
+database:
+  type: mysql
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: ''
+  database: zernus
+  ping_interval: 5             # 连接保活（空闲多久后 ping）
+  connect_timeout: 10
+  read_timeout: 30
+  write_timeout: 30
+  max_reconnect: 3             # 单次操作最大自动重连次数
+```
 
-框架启动时根据 `config.yaml → database` 建立连接并自动建表：
+检测到 MySQL 配置时会**自动安装** `pymysql` / `DBUtils`，无需手动装。
 
-- SQLite：按 `database.path`（默认 `data/zernus.db`）创建文件库；
-- MySQL：自动探测版本与字符集，适配 DDL 后建库建表。
+## 二、建表
 
-插件不要自己去改框架表结构；自己的业务表用 `ctx.create_table()` 创建。
-
-## 插件建表：统一写 MySQL 风格
+系统表在启动时自动创建 / 补齐（`sql/init.sql`）。**业务表由插件自管**：
 
 ```python
 def register(ctx):
-    ctx.create_table("""
-        CREATE TABLE IF NOT EXISTS my_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            score INTEGER DEFAULT 0,
-            memo TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ctx.db_execute("""
+        CREATE TABLE IF NOT EXISTS greet_log (
+            id   INTEGER PRIMARY KEY,
+            uid  INTEGER,
+            ts   REAL
         )
     """)
 ```
 
-框架自动完成方言适配，插件无需判断数据库类型：
+> `sql/init.sql` 面向 SQLite，`sql/init_mysql55.sql` 是 MySQL 兼容版本，框架按方言选文件。
 
-- SQLite：`AUTO_INCREMENT → AUTOINCREMENT`、`ENUM → TEXT`、移除不支持的内联 INDEX 等；
-- MySQL：`AUTOINCREMENT → AUTO_INCREMENT`，对长文本列上的索引自动改成
-  前缀索引 `col(191)`，规避 MySQL 的 1170/1064 错误。
+## 三、参数占位符统一用 `?`
 
-建议在 `register(ctx)` 里建表（幂等，`IF NOT EXISTS`），每次注册都会确保表存在。
-
-## 查询接口
-
-### 同步
+你只管写 `?`，框架按方言翻译（SQLite `?` ↔ MySQL `%s`）：
 
 ```python
-rows = ctx.db_query("SELECT * FROM users WHERE group_id=%s", (group_id,))     # list[dict]
-row  = ctx.db_query_one("SELECT * FROM users WHERE user_id=%s", (user_id,))  # dict / None
-n    = ctx.db_execute("UPDATE users SET score=score+%s WHERE id=%s", (1, id_))  # 受影响行数
-new_id = ctx.db_insert("INSERT INTO logs (msg) VALUES (%s)", ("hello",))     # 自增 ID
-ctx.db_execute_many("INSERT INTO t (v) VALUES (%s)", [(1,), (2,)])           # 批量
+ctx.db_execute("INSERT INTO greet_log (uid, ts) VALUES (?, ?)", (event.user_id, time.time()))
+rows = ctx.db_query("SELECT * FROM greet_log WHERE uid = ? ORDER BY ts DESC LIMIT 10", (event.user_id,))
 ```
 
-### 异步（async handler 推荐）
+## 四、插件里的数据库 API
 
-异步方法在**数据库专用线程池**执行，DB 繁忙也不会卡住消息事件循环：
+| 方法 | 返回 |
+| ---- | ---- |
+| `ctx.db_query(sql, params=None)` | `list[dict]`（每行一个字典） |
+| `ctx.db_query_one(sql, params=None)` | `dict` 或 `None` |
+| `ctx.db_execute(sql, params=None)` | 受影响行数 |
+| `ctx.db_execute_many(sql, params_list)` | 受影响行数 |
+| `ctx.db_insert(sql, params=None)` | 新插入行的 id |
+| `ctx.db_connection()` | 原始连接（高级用法） |
+
+**异步版**（`async def` handler 推荐，走数据库专用线程池）：
+`db_query_async` / `db_query_one_async` / `db_execute_async` / `db_execute_many_async` / `db_insert_async`。
 
 ```python
-rows = await ctx.db_query_async(sql, params)
-row  = await ctx.db_query_one_async(sql, params)
-n    = await ctx.db_execute_async(sql, params)
-new_id = await ctx.db_insert_async(sql, params)
-await ctx.db_execute_many_async(sql, params_list)
+async def on_cmd(event, match):
+    rows = await ctx.db_query_async("SELECT COUNT(*) AS c FROM greet_log")
+    await ctx.asend_msg(group_id=event.group_id, user_id=None, message=str(rows[0]["c"]))
 ```
 
-查询结果统一为 `dict`（单条）或 `list[dict]`（多条），列名即键。
+## 五、事务
 
-## 占位符：统一用 `%s`
-
-无论 SQLite 还是 MySQL，**插件 SQL 一律写 `%s` 占位符**，框架在 SQLite 下
-自动转换成 `?`。不要拼接字符串，避免 SQL 注入与方言问题：
+用 `Database.transaction()` 上下文管理器。它是**同连接**事务：块内 `execute/insert` 都固定在一条连接上，
+正常退出统一提交，抛异常自动回滚。
 
 ```python
-# 正确：参数化
-ctx.db_execute("UPDATE t SET v=%s WHERE id=%s", (v, id_))
-# 错误：字符串拼接
-ctx.db_execute(f"UPDATE t SET v={v} WHERE id={id_}")
+db = ctx._framework.db
+
+with db.transaction():
+    db.execute("UPDATE accounts SET balance = balance - ? WHERE uid = ?", (10, a))
+    db.execute("UPDATE accounts SET balance = balance + ? WHERE uid = ?", (10, b))
 ```
 
-## 事务
+> 双进程模式下拿不到裸连接（`get_connection()` 不可用），请用 `transaction()` 或 `ctx` 的 db 系列方法。
 
-多条必须一起成功/失败的写操作，用 `db_connection()` 取连接手动提交/回滚。
-连接池模式下 `close()` 是归还连接，不是断开：
+## 六、数据库层的便捷方法
+
+`Database` 还提供：
+
+| 方法 | 说明 |
+| ---- | ---- |
+| `scalar(sql, params)` | 取单行单列的值 |
+| `exists(sql, params)` | 查询是否有结果 |
+| `count(sql, params)` | COUNT 结果转 int |
+| `table_exists(name)` / `table_info(name)` / `table_has_column(t, c)` | 结构自省 |
+| `pool_status()` | 连接池状态 |
+| `close()` | 关闭连接池 |
+
+`ctx.db_pool_status` 可直接读到连接池状态。
+
+## 七、schema 迁移
+
+启动时会自动执行增量迁移（`core/storage/migrations.py`），例如给老表补列。
+所以升级框架后一般不需要手动改表。
+
+## 八、扩展点
+
+数据库读写是**可观察**的，四个扩展点可用于审计、慢查询统计或同步：
+
+| 扩展点 | 时机 |
+| ---- | ---- |
+| `db.query.before` / `db.query.after` | 查询前 / 后（参数 `sql, params`，异常时 `after` 带 `error`） |
+| `db.execute.before` / `db.execute.after` | 写操作前 / 后（同上） |
 
 ```python
-conn = ctx.db_connection()
-try:
-    cur = conn.cursor()
-    cur.execute("UPDATE account SET balance=balance-%s WHERE id=%s", (100, from_id))
-    cur.execute("UPDATE account SET balance=balance+%s WHERE id=%s", (100, to_id))
-    conn.commit()
-except Exception:
-    conn.rollback()
-    raise
-finally:
-    cur.close()
-    conn.close()
+import time
+
+def register(ctx):
+    ctx.hook("db.execute.after", on_write)
+
+def on_write(sql=None, params=None, result=None, error=None, **kw):
+    if error:
+        ctx.log(f"[DB 失败] {sql} -> {error}", level="error")
 ```
 
-## 连接池状态
+详见[扩展点](../api/advanced/hooks.md)。
 
-```python
-ctx.db_pool_status     # dict：连接池占用/空闲等状态，便于排障
-```
+## 九、实践建议
 
-## SQLite vs MySQL 对比
+- **热路径别查库**：命令 handler 里能缓存的（权限、配置）用 `ctx.cache_set/get`；
+- **异步 handler 优先异步 API**：避免阻塞事件循环；
+- **批量写用 `db_execute_many`** 或放事务里；
+- **表名加插件前缀**（如 `mytool_log`）避免与其他插件撞名；
+- **别把业务表塞进系统表**：系统表由框架维护，升级可能迁移。
 
-| 特性 | SQLite | MySQL |
-|------|--------|-------|
-| 配置 | 零配置，单文件 | 需 host/port/user/password/database |
-| 并发 | 单写多读，适合轻量场景 | 支持高并发 |
-| 占位符 | 插件写 `%s`，运行时转 `?` | 原生 `%s` |
-| 自增主键 | `INTEGER PRIMARY KEY AUTOINCREMENT` | `INT ... AUTO_INCREMENT PRIMARY KEY` |
-| 适合规模 | 个人/小群 | 多群、高并发、多进程部署 |
+---
 
-## 字段元信息系统
-
-框架为业务表维护字段描述等元信息，配套提供（通过 ctx/框架能力）：
-
-- 描述字段、更新字段描述、列出全表字段描述；
-- 群级动态列等高级能力。
-
-插件自定义表只要遵循统一建表入口，即可被这些能力识别。
-
-## 实践建议
-
-1. 表名加插件前缀（如 `sign_records`），避免不同插件撞表；
-2. `async def` handler 里一律用 `*_async` 接口；
-3. 建表 DDL 保持幂等（`IF NOT EXISTS`），在 `register(ctx)` 调用；
-4. 高频写库考虑批量接口 `db_execute_many`；
-5. 用户可改的配置走 `_conf_schema.json` + `ctx.get_config`，不要自己建配置表。
+延伸：[ctx 数据库方法](../api/basic/ctx.md#七数据库) · [权限系统](./permission.md) · [架构总览](./architecture.md)

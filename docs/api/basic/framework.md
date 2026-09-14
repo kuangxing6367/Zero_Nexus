@@ -1,94 +1,87 @@
-# Framework 核心对象
+# Framework 内核对象
 
-> **本篇面向**：角色 C（需要触碰底层容器的高级开发者）。绝大多数插件只用 `ctx` 即可，不必读本篇。
+> **面向**：需要访问内核的高级扩展/插件开发者。绝大多数插件**只需要 `ctx`**。
 
-`Framework`（`core/engine.py`）是整个宿主的运行容器，插件里通过
-`ctx._framework` 拿到它的引用。绝大多数插件只需要 `ctx`，本页供需要访问
-底层能力（服务注册表、加载器、事件循环等）的高级场景参考。
+`Framework` 是内核的装配体（`core/engine.py`），`main.py` 直接实例化它。
+插件里可以通过 `ctx._framework` 拿到引用，但它属于**内部接口**，随版本可能调整。
 
-## 主要属性
+## 一、生命周期
+
+```python
+framework = Framework(config_path)     # 装配：配置 / 数据库 / 服务 / 钩子 / 路由 / 加载器
+await framework.start()                # 启动：加载扩展与插件 → 触发 lifecycle.startup
+...
+await framework.stop()                 # 停止：触发 lifecycle.shutdown，依次停服务
+```
+
+`main.py` 负责信号处理与 `asyncio.run`，通常不需要你手动调用。
+
+## 二、核心属性
 
 | 属性 | 类型 | 说明 |
-|------|------|------|
-| `fw.config` | `dict` | 加载并合并 `extensions.yaml` 后的全局配置 |
-| `fw.config_path` | `str` | 实际使用的配置文件绝对路径 |
-| `fw.services` | `ServiceRegistry` | 服务注册表，详见 [ServiceRegistry](./services.md) |
-| `fw.db` | `Database` | 数据库实例，详见 [数据库](../../advanced/database.md) |
-| `fw.event_bus` | `EventBus` | 事件总线（`subscribe/aemit/emit`） |
-| `fw.router` | `MessageRouter` | 消息路由器 |
-| `fw.plugin_loader` | `PluginLoader` | 插件加载器（加载/卸载/重载/发现） |
-| `fw.terminal` | `TerminalInput` | 内置终端交互 |
-| `fw.stats_writer` | `AsyncStatsWriter` | 统计批量写库器 |
+| ---- | ---- | ---- |
+| `fw.config` | `dict` | 合并后的配置（`config.yaml` + `extensions.yaml`） |
+| `fw.config_path` | `str` | 配置文件的绝对路径 |
+| `fw.db` | `Database` | 数据库抽象（双进程下为远程代理） |
+| `fw.services` | `ServiceRegistry` | 服务注册表（见[服务注册表](./services.md)） |
+| `fw.hooks` | `HookRegistry` | 扩展点注册表（见[扩展点](../advanced/hooks.md)） |
+| `fw.event_bus` | `EventBus` | 事件总线（`on` / `once` / `off` / `emit` / `aemit` / `await_event`） |
+| `fw.command_bus` | `CommandBus` | 命令原语（`register` / `invoke` / `ainvoke`） |
+| `fw.router` | `MessageRouter` | 消息路由（命令匹配、关键词回复） |
+| `fw.plugin_loader` | `PluginLoader` | 插件加载器（扫描 / 加载 / 卸载 / 热重载） |
+| `fw.terminal` | `TerminalInput` | 终端交互 |
 | `fw.loop` | `asyncio.AbstractEventLoop` | 主事件循环（启动后可用） |
 
-## 服务别名属性
+## 三、便捷属性（服务快捷方式）
 
-为兼容旧代码，常用服务也提供了属性快捷方式（等价于 `fw.services.get(...)`）：
+| 属性 | 等价于 |
+| ---- | ---- |
+| `fw.api_caller` | `fw.services.get('api_caller')` |
+| `fw.ws_server` | `fw.services.get('ws_server')` |
+| `fw.web_server` | `fw.services.get('web_server')` |
+| `fw.scheduler` | `fw.services.get('scheduler')` |
 
-| 属性 | 等价 |
-|------|------|
-| `fw.api_caller` | `fw.services.get("api_caller")` |
-| `fw.ws_server` | `fw.services.get("ws_server")` |
-| `fw.scheduler` | `fw.services.get("scheduler")` |
-| `fw.web_server` | `fw.services.get("web_server")` |
+## 四、公开方法
 
-会话管理器、Web 服务等统一从 `fw.services.get("session_manager")`、
-`fw.services.get("web_server")` 获取。
+| 方法 | 说明 |
+| ---- | ---- |
+| `await fw.start()` / `await fw.stop()` | 启动 / 停止 |
+| `await fw.dispatch_event(event: dict)` | 把一条事件字典投进内核（接入端用它） |
+| `fw.register_raw_message_handler(plugin_name, handler, priority=50)` | 注册原始消息 handler |
+| `fw.unregister_raw_message_handlers(plugin_name)` | 注销某插件的原始消息 handler |
+| `await fw.reply_text(target, text)` | 由内核统一发一条文本（会走 `message.before_send` 扩展点） |
+| `await fw.terminal_exec(name, args='')` | 执行一个终端命令，返回输出文本 |
+| `fw.build_ssl_context()` | 按 `config.ssl` 构造 SSLContext |
 
-## 生命周期
+## 五、启动时序（简化）
 
-```python
-fw = Framework(config_path)   # 初始化：配置、日志、数据库、事件总线、加载器
-await fw.start()              # 加载官方插件 → 用户插件 → 注册 → 心跳/看门狗
-await fw.stop()               # 反序停止：WebSocket、调度器、Web、数据库
+```
+Framework()                     装配：配置 → 日志 → 数据库 → 服务/钩子/路由/加载器
+  └─ await start()
+       1. 建表 / 迁移
+       2. 扫描并加载官方扩展（按 extensions.yaml 与依赖）
+       3. 加载用户插件（plugins/）→ 执行 register(ctx)，收集命令/任务/扩展点
+       4. 启动服务：接入端 → 调度器 → Web → （可选）WS 事件推送 / gRPC
+       5. 触发 lifecycle.startup
+       6. 打印启动横幅，进入运行
+  └─ await stop()
+       触发 lifecycle.shutdown → 停服务 → 落日志
 ```
 
-`start()` 的精确顺序见 [架构详解 - 启动时序](../../advanced/architecture.md)。
+## 六、`platform` 等兼容层
 
-## 典型用法
+为兼容旧调用点，`Framework` 保留了一些薄委托方法与属性（如把请求转发给 `router` / `plugin_loader`）。
+新代码请直接用上表里的属性。
 
-### 在主事件循环上调度协程
+## 七、什么时候不该用它
 
-```python
-async def background():
-    ...
-fw.loop.create_task(background())
-```
+- 想发消息 → 用 `ctx.send_msg` / `ctx.api`；
+- 想读配置 → 用 `ctx.get_config`；
+- 想挂行为 → 用 `ctx.hook`；
+- 想注册路由 → 用 `ctx.register_api`。
 
-### 直接访问数据库（不推荐，优先 ctx.db_*）
-
-```python
-fw.db.query_one("SELECT COUNT(*) AS c FROM commands")
-```
-
-### 操作插件加载器
-
-```python
-fw.plugin_loader.unload_plugin("my_plugin")
-ok = fw.plugin_loader.load_plugin("my_plugin")
-if ok:
-    fw.plugin_loader.register_commands("my_plugin")
-```
-
-插件模块的加载/命名/热重载机制见
-[插件加载与模块机制](../../advanced/loader.md)。
-
-### 跨插件事件
-
-```python
-await fw.event_bus.aemit("my_custom_event", {"k": "v"})
-```
-
-## 注意事项
-
-:::warning
-- 插件初始化（模块顶层、`register`）阶段，部分服务可能尚未就绪，
-  请延迟到 handler 内或监听 `system.plugin.loaded` 后再取；
-- 不要在插件里缓存 `fw.services.get(...)` 的结果作为模块级常量，
-  服务可能因重载而替换，用时再取或判空；
-- 直接操作 `plugin_loader`/`db` 属于高级用法，注意异常处理与状态一致性。
-:::
+只有当你做的事情**确实不属于任何一个插件能力**时，才去碰 `ctx._framework`。
 
 ---
 
-> 想在这些能力之外插入自己的行为？见 [扩展点（Hook 系统）](../advanced/hooks.md)：在启动/关闭、Web 请求、事件分发、命令执行、协议动作、出站文本等几乎每个运行环节挂接逻辑。
+延伸：[服务注册表](./services.md) · [扩展点](../advanced/hooks.md) · [架构总览](../../advanced/architecture.md)

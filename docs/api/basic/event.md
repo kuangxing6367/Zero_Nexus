@@ -1,155 +1,117 @@
 # Event 事件对象
 
-> **本篇面向**：角色 B。`Event` 是接入端归一化后的事件对象（默认接入端 OneBot 11，字段最丰富）；其它接入端按同一结构归一化。
+> **面向**：插件开发者。handler 的第一个参数就是 `Event`。
 
-`Event`（`core/messaging/event.py`）是接入端归一化后、传给命令处理器与
-`message` 类订阅处理器的事件对象（默认接入端为 OneBot 11，字段最丰富；其它接入端按同一结构归一化）。
-原始消息处理器（`ctx.on_raw_message`）拿到的则是**未封装的原始 dict**，注意区分。
+`Event` 把接入端上报的原始字典包装成统一对象：既提供扁平字段（`user_id` / `group_id` / `message`…），
+也在需要时按需查询权限、解析富媒体段。
 
-## 一、基本属性
+> **协议无关**：内核只认这套固定字段。换接入端时，业务插件不必改。
 
-| 属性 | 类型 | 说明 |
-|------|------|------|
-| `event.post_type` | `str` | 事件大类：`message` / `notice` / `request` / `meta_event` |
-| `event.message_type` | `str` | `"group"` 或 `"private"` |
-| `event.sub_type` | `str` | 事件子类型（如群成员变动的 `approve/invite`） |
-| `event.user_id` | `int` | 发送者 用户 ID |
-| `event.group_id` | `int` | 群号（私聊为 `0`/None，用 `is_group` 判断） |
-| `event.self_id` | `int` | 机器人自身 用户 ID |
-| `event.message` | `str` | 提取后的纯文本内容 |
-| `event.raw_message` | `str` | 原始消息文本（CQ 码字符串形式） |
+## 一、基础字段
+
+| 字段 | 类型 | 说明 |
+| ---- | ---- | ---- |
+| `event.post_type` | `str` | `message` / `notice` / `request` / `meta_event` |
+| `event.message_type` | `str` | `group` / `private` |
+| `event.sub_type` | `str` | 子类型（如 `normal` / `anonymous`） |
+| `event.self_id` | `int` | 机器人的用户 ID |
+| `event.bot_name` | `str` | 消息来源的接入实例名（多实例时用于区分） |
+| `event.message` | `str` | **纯文本**（已从消息段提取，供命令匹配用） |
+| `event.raw_message` | `str` | 原始文本 |
 | `event.message_id` | `int` | 消息 ID |
-| `event.sender` | `dict` | 发送者原始信息（nickname/card/role/title…） |
-| `event.bot_name` | `str` | 来源 OneBot 实例名（多账号区分） |
-| `event.font` | `int` | 客户端字体（一般用不到） |
-| `event.segments` | `list[dict]` | 消息段数组，每项 `{"type": ..., "data": {...}}` |
-| `event._raw` / `event.raw` | `dict` | 原始 OneBot 事件 dict |
+| `event.user_id` | `int` | 发送者 ID |
+| `event.group_id` | `int` | 群 ID（私聊为 0） |
+| `event.sender` | `dict` | 原始 sender 对象（`nickname` / `card` / `role` …） |
+| `event.font` | `int` | 字体 |
+| `event.segments` | `list` | 原始消息段 `[{type, data}, ...]` |
 
-## 二、类型判断（属性）
+```python
+def handler(event, match):
+    print(event.user_id, event.group_id, event.message)
+```
+
+## 二、便捷属性
 
 | 属性 | 说明 |
-|------|------|
-| `event.is_group` | 是否群消息 |
-| `event.is_private` | 是否私聊消息 |
-| `event.is_admin` | 是否具备管理身份（超管/群主/管理员均为 True） |
-| `event.is_superuser` | 是否框架超级管理员 |
-| `event.is_group_owner` | 是否群主 |
-| `event.is_group_admin` | 是否群管理员（不含群主） |
-| `event.is_blacklisted` | 是否黑名单（超管即使被拉黑 role 仍为 super） |
-| `event.role` | 身份字符串：`super/owner/admin/member/blacklist` |
+| ---- | ---- |
+| `event.is_group` / `event.is_private` | 是否群聊 / 私聊 |
+| `event.sender_role` | OneBot 上报的 `sender.role`：`owner` / `admin` / `member` |
+| `event.role` | 综合身份判定（含超管） |
+| `event.sender_nickname` / `event.sender_card` | 昵称 / 群名片 |
+| `event.is_admin` / `event.is_superuser` | 是否管理员 / 超管 |
+| `event.is_group_owner` / `event.is_group_admin` | 是否群主 / 群管理员 |
+| `event.is_blacklisted` | 是否黑名单 |
 
-发送者便捷属性：
+## 三、富媒体与消息段
 
 | 属性 | 说明 |
-|------|------|
-| `event.sender_nickname` | `sender.nickname` |
-| `event.sender_card` | `sender.card`（群名片） |
-
-## 三、消息段 segments
-
-```python
-for seg in event.segments:
-    t = seg.get("type")           # text/image/at/reply/face/record/video/file/share...
-    data = seg.get("data", {})
-    if t == "text":
-        text = data.get("text", "")
-    elif t == "image":
-        url = data.get("url")
-```
-
-### 富媒体判断与提取（属性）
-
-| 属性 | 返回 | 说明 |
-|------|------|------|
-| `event.has_image` | `bool` | 是否含图片 |
-| `event.images` | `list[dict]` | 全部图片段的 data（含 file/url 等） |
-| `event.first_image` | `dict` | 第一张图片 data，没有则 `{}` |
-| `event.has_at` | `bool` | 是否含 @ |
-| `event.at_list` | `list[int]` | 被 @ 的用户 ID 列表（不含“全体”） |
-| `event.at_all` | `bool` | 是否 @全体成员 |
-| `event.has_at_bot` | `bool` | 是否 @ 了机器人本身 |
-| `event.has_reply` | `bool` | 是否为回复消息 |
-| `event.reply_id` | `int/None` | 被回复消息的 ID |
-| `event.has_voice` | `bool` | 是否含语音（消息段类型 `record`） |
-| `event.has_video` | `bool` | 是否含视频 |
-| `event.has_file` | `bool` | 是否含文件 |
-| `event.has_face` | `bool` | 是否含表情 |
-| `event.has_share` | `bool` | 是否含分享卡片 |
-| `event.share` | `dict` | 分享卡片 data（title/url/desc），没有则 `{}` |
+| ---- | ---- |
+| `event.has_image` / `has_voice` / `has_video` / `has_file` | 是否含该类型段 |
+| `event.has_face` / `has_share` / `has_reply` | 表情 / 分享卡片 / 回复 |
+| `event.has_at` / `has_at_bot` / `at_all` | 是否 @ 某人 / @ 机器人 / @全体 |
+| `event.at_list` | 被 @ 的用户 ID 列表 |
+| `event.images` / `event.first_image` | 图片数据列表 / 第一张 |
+| `event.share` | 分享卡片数据（title / url / desc） |
+| `event.reply_id` | 被回复的消息 ID（非回复则 `None`） |
 
 ```python
-if event.has_at_bot and "签到" in event.message:
-    ...
-if event.has_reply:
-    origin = event.reply_id
+def handler(event, match):
+    if event.has_at_bot:
+        ctx.send_msg(group_id=event.group_id, user_id=None, message="你在叫我吗？")
+    if event.has_image:
+        url = event.first_image.get("url")
 ```
 
-## 四、传播控制
+需要更细的字段时直接遍历 `event.segments`。
 
-### event.stop_event()
-
-停止继续传播，本插件之后的插件不再收到该事件：
-
-```python
-async def handle(event, match):
-    event.stop_event()
-    await ctx.asend_msg(..., message="已拦截")
-```
-
-### event.is_stopped() -> bool
-
-事件是否已被停止。
-
-### event.continue_route()
-
-命令命中后默认“独占”消息（系统关键词自动回复不再尝试）；
-调用本方法放行，让关键词回复继续匹配。
-
-### event.is_continue_route() -> bool
-
-是否声明了继续路由。
-
-## 五、权限（权限组轴）
-
-身份判断用上面的 `event.role`；LuckPerms 风格的权限节点用下面这套，
-首次调用时解析并缓存，普通消息零开销：
+## 四、权限查询
 
 | 成员 | 说明 |
-|------|------|
-| `event.has_perm(node) -> bool` | 是否拥有节点（未定义按拒绝），支持 `chat.*`、`*` 通配 |
-| `event.check_perm(node)` | 三态：`True` 授予 / `False` 显式否决 / `None` 未定义 |
-| `event.perms` | 完整权限快照 `PermissionSet`（`.groups/.nodes/.primary_group`） |
-| `event.perm_groups` | 生效权限组列表（含继承，按 weight 降序） |
-| `event.primary_group` | 权重最高的非内置权限组 |
+| ---- | ---- |
+| `event.has_perm(node) -> bool` | 是否有权限节点（三态中的「允许」） |
+| `event.check_perm(node)` | 三态：允许 / 拒绝 / 未设置 |
+| `event.perms` | 权限快照（`PermissionSet`） |
+| `event.perm_groups` | 命中的权限组列表 |
+| `event.primary_group` | 主权限组名 |
+
+权限上下文（所在群、身份等）自动从事件构造；底层查询带 60s TTL 内存缓存。
+详见[权限系统](../../advanced/permission.md)。
+
+## 五、传播控制
+
+命令/事件可能是"一条消息触发多条规则"，用这两个开关控制是否继续：
+
+| 成员 | 说明 |
+| ---- | ---- |
+| `event.stop_event()` / `event.is_stopped` | 已停止传播（不再走后续规则） |
+| `event.continue_route()` / `event.is_continue_route` | 显式允许后续系统关键词回复继续尝试 |
 
 ```python
-if not event.has_perm("sign.admin"):
-    await ctx.asend_msg(..., message="权限不足")
+def on_hello(event, match):
+    event.stop_event()      # 这条消息到此为止
+    ctx.send_msg(group_id=event.group_id, user_id=None, message="Hello")
 ```
 
-## 六、sender 原始字段
+## 六、事件从哪来
+
+- **命令 handler**：命令命中后调用，签名 `(event, match)`；
+- **`ctx.on(name, handler)`**：业务事件订阅（如 `notice.group_recall`）；
+- **`ctx.on_raw_message(handler)`**：命令匹配前的原始消息（只有一个参数 `event`）;
+- **扩展点**：`event.before_dispatch` / `event.after_dispatch` 收到的是**字典**，不是 `Event` 对象。
+
+## 七、缓存刷新（高级）
+
+角色/权限结果有内存缓存。如果你直接改了数据库里的角色/权限数据，可调用：
 
 ```python
-sender = event.sender
-nickname = sender.get("nickname", "")
-card     = sender.get("card", "")        # 群名片
-role     = sender.get("role", "member")  # owner/admin/member（OneBot 原始字段）
-title    = sender.get("title", "")       # 群头衔
+from core.messaging.event import invalidate_user_role_cache, invalidate_group_role_cache
+
+invalidate_user_role_cache(user_id)          # 或不传参清空全部
+invalidate_group_role_cache(group_id, user_id)
 ```
 
-:::tip 身份以 event.role 为准
-`sender.role` 是 OneBot 客户端上报的原始字段；框架综合超管名单、黑名单等得到的
-最终身份请用 `event.role` / `event.is_admin` 等属性。
-:::
-
-## 七、调试输出
-
-`repr(event)` 会输出类型、用户、群号与消息前 30 字，便于日志排查：
-
-```python
-ctx.log(f"收到事件: {event!r}")
-```
+框架在后台改权限后会自动失效对应缓存，通常不需要手动调用。
 
 ---
 
-> 想在这些能力之外插入自己的行为？见 [扩展点（Hook 系统）](../advanced/hooks.md)：在启动/关闭、Web 请求、事件分发、命令执行、协议动作、出站文本等几乎每个运行环节挂接逻辑。
+延伸：[ctx 参考](./ctx.md) · [权限系统](../../advanced/permission.md) · [扩展点](../advanced/hooks.md)
