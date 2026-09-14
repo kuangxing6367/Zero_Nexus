@@ -71,18 +71,22 @@ plugins/*（用户插件）+ extensions/*（官方扩展）
 
 ## 六、构建你自己的源
 
-仓库里的 `repo/` 就是官方源的构建工程：
+仓库里的 `repo/` 就是官方源的构建工程，每个机制包一个目录：
 
 ```
 repo/
-├── *.toml             # 各机制包的清单
-├── pool/              # 打包产物（.tar.gz）
-└── build.py           # 生成 dist/index.json 与 pool/
+├── build.py                 # 生成 dist/index.json 与 pool/
+├── exec/                    # 一个机制包：manifest.toml + main.py
+│   ├── manifest.toml
+│   └── main.py
+├── store/  system/  udp/  ws/
+├── pool/                    # 打包产物：<id>-<版本>.tar.gz
+└── dist/                    # 生成的索引：index.json（+ indices/index-*.json）
 ```
 
 ```bash
 python repo/build.py             # 生成 dist/index.json + pool/*.tar.gz
-python repo/build.py --split 4   # 拆成 4 份索引分片
+python repo/build.py --split 4   # 拆成 4 份分片（dist/indices/index-0..3.json）
 ```
 
 产出的 `dist/` 即可作为 `local` 源，或上传到你的 HTTP 镜像作为 `http` 源。
@@ -103,12 +107,19 @@ for tid in res.needed:                                # 只加载「被依赖」
 
 ## 八、写一个机制包清单
 
+机制包的清单是 `repo/<id>/manifest.toml`，用 `[package]` 段声明（对照 `repo/exec/manifest.toml`）：
+
 ```toml
-# repo/example.toml（示意）
+# repo/example/manifest.toml
+[package]
 id = "example"
+name = "Example Tool"
+type = "tool"              # tool（机制包）/ plugin
 version = "1.0.0"
+description = "示例机制包"
 dependencies = []          # 依赖的其他机制包 id
-entry = "example.py"       # 入口模块
+provides = ["example"]     # 对外提供的能力名
+entry = "main.py"          # 入口模块，与 manifest 同级
 ```
 
 用户插件在 `plugin.yaml` 里声明对它的依赖：

@@ -41,7 +41,7 @@ extensions:
 ## 四、多实例
 
 一个 Zeronus 可以同时接多个协议端（多 bot）。事件对象上的 `event.bot_name` 标识来源实例，
-发消息时可用 `ctx.api(action, params, bot=...)` 指定目标实例。
+发消息时可用 `ctx.api(action, bot=..., **params)` 指定目标实例。
 
 ## 五、发消息与群管
 
@@ -49,7 +49,7 @@ extensions:
 
 ```python
 ctx.send_msg(group_id=event.group_id, user_id=None, message="你好")
-ctx.api("set_group_ban", {"group_id": gid, "user_id": uid, "duration": 60})
+ctx.api("set_group_ban", group_id=gid, user_id=uid, duration=60)
 ```
 
 需要 OneBot 专用能力时走 `ctx.onebot`（`onebot_api` 服务），覆盖 OneBot 11 的常用动作，例如：

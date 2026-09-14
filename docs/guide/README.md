@@ -80,7 +80,7 @@
 | [权限系统](../advanced/permission.md) | 节点、权限组、继承、上下文、轨道、审计 | B |
 | [定时任务](../advanced/scheduler.md) | cron 任务、任务状态、与扩展点联动 | B |
 | [部署上线](../advanced/deployment.md) | systemd / Docker / 反向代理 / 安全清单 | A |
-| [双核心（实验）](../advanced/dual-core.md) | core/host 双进程隔离 | C |
+| [双核心（实验）](../advanced/dual-core.md) | 核心进程 / 宿主进程双进程隔离 | C |
 
 ---
 

@@ -60,7 +60,7 @@ Zeronus 是一个**微内核**：内核极小且不含任何业务/协议实现�
 | `terminal/` | 终端交互与内置命令 |
 | `tls/` `log_broker/` | SSL 上下文 / 日志代理（控制台 + 轮转文件 + 内存流） |
 | `api/` | WebUI 后端 REST 功能域（可插入路由注册表） |
-| `ipc/` | core/host 双进程 JSON-RPC（`dual_process` 门控） |
+| `ipc/` | 双进程（核心进程 / 宿主进程）IPC（`dual_process` 门控） |
 
 ## 三、启动时序
 

@@ -68,6 +68,40 @@ ssl:
 
 启用后 WebUI 走 HTTPS、OneBot 接入走 WSS（共用同一证书）。
 
+### 对外接口（可选）
+
+```yaml
+http_api:                      # 给外部程序用的 REST API
+  host: 127.0.0.1
+  port: 1145
+  token: ""                    # 留空则每次启动随机生成（打印到日志）
+  allow_db: false              # 是否开放 db/query、db/execute（高危，默认关）
+
+http_inject:                   # HTTP 事件注入接入端
+  enabled: false
+  host: 127.0.0.1
+  port: 8901
+  path: /hook
+  token: ""
+```
+
+### 官方扩展开关
+
+`config.yaml` 里还有一段布尔开关，与 `extensions.yaml` 的详细配置配合：
+
+```yaml
+extensions:
+  onebot_adapter: true
+  webui: true
+  session: true
+  scheduler: true
+  http_api: false
+  http_inject: false
+```
+
+> 启动时会自动扫描 `extensions/`，把「已安装但未列出」的官方扩展补进这一段。
+> `http_api` / `http_inject` 需要**此处为 `true`** 且 `extensions.yaml` 对应块的 `enabled` 也为 `true`，两者都满足才生效。
+
 ### 日志
 
 ```yaml

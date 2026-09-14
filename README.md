@@ -9,7 +9,7 @@
 > 换一个 `ProtocolAdapter`，它可以是 Telegram / Discord 机器人、HTTP Webhook 接收器、纯定时任务服务，
 > 或任何「事件 → 处理 → 响应」的程序。
 
-| | |
+| 项 | 值 |
 | --- | --- |
 | 当前版本 | **v0.0.1-beta.0-alpha.0**（见 [CHANGELOG.md](CHANGELOG.md)） |
 | 仓库 | <https://github.com/kuangxing6367/Zero_Nexus> |
@@ -29,7 +29,7 @@
 ### 它不是什么
 
 - **不是** NapCat / Lagrange / go-cqhttp 这类协议端。它需要 OneBot 实现端以「反向 WebSocket」连入。
-- **不是**分布式/多节点中台。它是单进程宿主（可选 core/host 双进程），不内置集群与消息队列编排。
+- **不是**分布式/多节点中台。它是单进程宿主（可选双进程模式：核心进程 + 宿主进程），不内置集群与消息队列编排。
 - **不提供**跨语言 SDK。业务扩展用 Python 写；跨语言交互走它暴露的 HTTP API / Webhook。
 
 ---
@@ -79,7 +79,7 @@ bash start.sh
 ```
 .
 ├── main.py              # 启动入口：python main.py [自定义配置路径]
-├── config.yaml          # 主配置（首次启动生成；不含扩展开关）
+├── config.yaml          # 主配置（首次启动生成）：数据库/OneBot/Web/SSL/日志/插件/安全/双进程 + 扩展开关
 ├── extensions.yaml      # 官方扩展配置中心：开关与参数集中于此
 ├── requirements.txt
 ├── core/                # 内核（不含任何 OneBot 实现）
@@ -98,7 +98,7 @@ bash start.sh
 │   ├── auth/ cache.py di.py webhook.py
 │   ├── scheduler/ terminal/ tls/ log_broker/ config/
 │   ├── api/             #   后台 REST 功能域（可插入路由注册表）
-│   └── ipc/             #   core/host 双进程 JSON-RPC（dual_process 门控）
+│   └── ipc/             #   双进程（核心 / 宿主）：IPC 回环 TCP + authkey，dual_process 门控
 ├── extensions/          # 官方扩展（在 extensions.yaml 开关）
 │   ├── onebot_adapter/  #   OneBot 11 接入端
 │   ├── webui/           #   Web 管理后台
@@ -107,7 +107,7 @@ bash start.sh
 │   ├── image_renderer/  #   图片渲染（含 Rust 原生扩展）
 │   ├── http_inject/     #   HTTP 事件注入接入端
 │   └── http_api/        #   独立对外 HTTP API
-├── adapters/            # 协议适配器
+├── adapters/            # 协议适配器预留目录（当前为空，实现见 core/adapters/）
 ├── plugins/             # 用户插件（每个一个目录，入口 main.py）
 ├── web/                 # 后台前端构建产物（由 webui/ 构建）
 ├── webui/               # 后台前端源码（Vue 3 + Vite + Element Plus）
@@ -145,10 +145,10 @@ def on_hello(event, match):
 | --- | --- |
 | 命令注册 | `ctx.command(pattern, handler, priority=50, alias=None, description=None, require_admin=False, require_superuser=False, require_perm=None)` |
 | 消息发送 | `ctx.send_msg(...)` / `ctx.asend_msg(...)` |
-| 接入端动作 | `ctx.api(action, params)` / `ctx.aapi(...)`（协议无关）；`ctx.onebot.*`（OneBot 专用） |
+| 接入端动作 | `ctx.api(action, **params)` / `ctx.aapi(...)`（协议无关）；`ctx.onebot.*`（OneBot 专用） |
 | 事件 | `ctx.on(name, handler)` / `ctx.on_raw_message(...)` / `ctx.emit(...)` / `ctx.aemit(...)` / `ctx.once(...)` / `ctx.off(...)` / `await ctx.await_event(name, timeout)` |
 | 配置 | `ctx.get_config(key, default=None)` / `ctx.get_all_config()` |
-| 数据库 | `ctx.db_query(...)` / `ctx.db_execute(...)` / `ctx.db_query_async(...)` / `ctx.db_execute_async(...)` / `ctx.db_transaction(...)` |
+| 数据库 | `ctx.db_query(...)` / `ctx.db_query_one(...)` / `ctx.db_execute(...)` / `ctx.db_insert(...)`（及 `*_async` 异步版） / `ctx.db_connection()` |
 | 权限与身份 | `ctx.has_perm(uid, node, ...)` / `ctx.check_perm(...)` / `ctx.user_groups(...)` |
 | 多轮会话 | `await ctx.wait_for(event, prompt=None, timeout=60, handler=None)` / `ctx.create_session(event, timeout=60)` |
 | 定时任务 | `ctx.task(cron_expr, executor, description=None)` |
@@ -271,7 +271,7 @@ WebUI 后端由若干功能域组成，可插入路由注册表：`auth` / `admi
 
 ## 十二、双核心（实验特性，默认关闭）
 
-把一次启动拆成「核心进程」+「宿主进程」，中间用标准库 IPC（回环 TCP + authkey）通信，零第三方依赖。
+把一次启动拆成「核心进程」+「宿主进程」，中间用 IPC（回环 TCP + `authkey`）通信。
 用于隔离用户扩展故障、压低核心常驻内存。
 
 ```yaml
