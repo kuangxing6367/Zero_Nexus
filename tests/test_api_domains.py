@@ -14,10 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, jsonify, request
 
-from core.api import batch as batch_mod
+from software.extensions.webui import batch as batch_mod
 from core.webhook import WebhookDispatcher
 from core.kernel.event_bus import EventBus
-from core.api.ws_events import WsEventHub
+from software.extensions.webui.ws_events import WsEventHub
 
 
 def _fake_ctx(app, require_auth):

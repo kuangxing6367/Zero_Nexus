@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""权限引擎自测（临时脚本，验证后删除）"""
+"""权限引擎自测（43 项断言，正式回归用例）"""
 import os
 import sys
 import time

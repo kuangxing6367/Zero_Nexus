@@ -53,11 +53,12 @@ bash start.sh
 .
 ├── main.py              # 启动入口：python main.py [自定义配置路径]
 ├── config.yaml          # 主配置（首次启动生成）
-├── extensions.yaml      # 官方扩展配置中心
-├── core/                # 内核（不含任何 OneBot 实现）
-├── extensions/          # 官方扩展
-├── plugins/             # 用户插件
+├── extensions.yaml      # 官方扩展开关与参数（软件级扩展清单）
+├── core/                # 内核级（机制；不含任何 OneBot 实现）
+├── service/             # 服务级（zkg 包管理、启停编排、看门狗）
+├── software/            # 软件级（extensions/ 官方扩展 + plugins/ 用户插件）
 ├── web/  webui/         # 后台前端产物 / 源码
+├── repo/                # zkg 本地包仓库（离线兜底包源）
 ├── sql/                 # 建表 SQL
 ├── data/                # 运行时数据（数据库、日志、插件私有数据）
 └── docs/                # 本文档
@@ -69,7 +70,7 @@ bash start.sh
 python main.py
 ```
 
-看到启动横幅（版本 / 进程模式 / 数据目录 / 数据库 / 已加载扩展 / 监听端口）即成功。
+看到启动横幅（版本 / 数据目录 / 数据库 / 已加载扩展 / 监听端口）即成功。
 默认端口：WebUI `127.0.0.1:8080`、OneBot 反向 WS `0.0.0.0:6830`。
 
 `config.yaml` 与 `data/` 会在首次启动时自动生成。
@@ -83,7 +84,7 @@ python main.py
 ```
 
 - 数据库表结构会在启动时自动补齐；
-- 用户插件放在 `plugins/`，升级框架不会覆盖；插件私有数据在 `data/plugins_dat/`，同样保留；
+- 用户插件放在 `software/plugins/`，升级框架不会覆盖；插件私有数据在 `data/plugins_dat/`，同样保留；
 - `config.yaml` 与 `extensions.yaml` 属于你的本地配置，升级不会覆盖。
 
 ---

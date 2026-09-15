@@ -4,6 +4,10 @@
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+dist/
+build/
+*.egg
 
 # Vite 构建期临时配置快照
 webui/vite.config.js.timestamp-*
@@ -16,56 +20,26 @@ docs/.npm-cache/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/.vitepress/.temp/
-*.egg-info/
-dist/
-build/
-*.egg
 
 # ============================================================
-# 插件目录（放行内置插件，其余不上传）
+# 软件级：用户插件（software/plugins）
+# 仅保留包骨架 __init__.py，用户自建插件不进仓库
 # ============================================================
-plugins/*
-!plugins/echo/
-!plugins/echo/main.py
-!plugins/echo/requirements.txt
-!plugins/help/
-!plugins/help/main.py
-!plugins/help/draw.py
-!plugins/help/requirements.txt
-!plugins/help/DouyinSansBold.otf
-!plugins/runtime_status/
-!plugins/runtime_status/main.py
-!plugins/runtime_status/requirements.txt
-!plugins/image_renderer/
-!plugins/image_renderer/main.py
-!plugins/image_renderer/requirements.txt
-!plugins/image_renderer/native/
-!plugins/image_renderer/native/Cargo.toml
-!plugins/image_renderer/native/src/
-!plugins/image_renderer/native/src/lib.rs
-!plugins/image_renderer/native/README.md
-!plugins/image_renderer/native/bin/
-!plugins/image_renderer/native/bin/**/.gitkeep
-!plugins/image_renderer/native/bin/**/zcbot_render.so
-!plugins/image_renderer/native/bin/**/zcbot_render.pyd
-plugins/image_renderer/native/target/
-plugins/image_renderer/native/bin_extract/
+software/plugins/*
+!software/plugins/__init__.py
 
-# Rust 原生扩展构建产物（官方插件已迁至 extensions/，以下为当前实际路径）
-extensions/*/native/target/
-extensions/*/native/bin_extract/
+# 软件级：官方扩展的原生构建产物（Rust/C 扩展编译输出）
+software/extensions/*/native/target/
+software/extensions/*/native/bin_extract/
 
-# 插件数据/配置目录（仅放行 help 的插件配置）
-plugins_dat/*
-!plugins_dat/help/
-plugins_dat/help/*
-!plugins_dat/help/plugin.yaml
-
+# ============================================================
 # 本地依赖包（.whl 等，体积大且为第三方产物）
+# ============================================================
 packages/
 
 # ============================================================
 # 敏感配置（勿提交到公开仓库）
+# 说明：config.yaml 首次启动会按三层模板自动生成，故不入库
 # ============================================================
 config.yaml
 config.yaml.bak.*
@@ -74,13 +48,9 @@ cookies.txt
 *.db
 
 # ============================================================
-# 数据文件
+# 数据 / 日志
 # ============================================================
 data/
-
-# ============================================================
-# 日志
-# ============================================================
 logs/
 *.log
 
@@ -88,7 +58,6 @@ logs/
 # Node.js / node_modules
 # ============================================================
 node_modules/
-plugins/office_assistant/word_renderer_js/node_modules/
 
 # ============================================================
 # IDE / 编辑器
@@ -107,25 +76,12 @@ Thumbs.db
 .DS_Store
 
 # ============================================================
+# 本地重构回收站 / 临时产物（非源码，勿提交）
+# 说明：三层重构期间移出的旧代码与验证脚本暂存于此，仅供本地回溯
+# ============================================================
+_trash_rebuild/
+
+# ============================================================
 # WorkBuddy 项目数据（非源码，勿提交）
 # ============================================================
-.workbuddy/
-
-# ============================================================
-# 插件目录（不在源码范畴，已移出项目目录）
-# ============================================================
-../zcbot_plugins/*.bak.*
-# 新增基础插件（v0.0.1-beta.1）
-!plugins/session_waiter/
-!plugins/session_waiter/**
-!plugins/message_guard/
-!plugins/message_guard/**
-!plugins/plugin_depgraph/
-!plugins/plugin_depgraph/**
-!plugins/ui_ext_demo/
-!plugins/ui_ext_demo/**
-plugins/*/__pycache__/
-plugins/*/__pycache__/**
-
-# 工具 / 智能体本地状态
 .workbuddy/

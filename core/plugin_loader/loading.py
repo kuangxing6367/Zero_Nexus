@@ -490,17 +490,14 @@ class LoadingMixin:
             # 2) 调度器孤儿清理：任务所属插件当前未加载，无法执行则移除
             try:
                 scheduler = self.framework.scheduler
-                if scheduler is None:
-                    pass
-                else:
+                if scheduler is not None:
                     stale = [
-                        tid for tid, info in scheduler._plugin_tasks.items()
+                        tid for tid, info in scheduler._jobs.items()
                         if info.get('plugin_name') not in loaded
                     ]
                     for tid in stale:
                         try:
-                            scheduler._scheduler.remove_job(tid)
-                            scheduler._plugin_tasks.pop(tid, None)
+                            scheduler.remove_job(tid)
                             logger.info(f"[自检] 移除调度器孤儿任务: {tid}")
                         except Exception:
                             pass
@@ -558,24 +555,33 @@ class LoadingMixin:
             return
         self._memory_monitor_running = True
 
-        cfg = self.framework.config.get('plugin', {})
-        max_mb = cfg.get('max_memory_mb', 64)
+        plugin_cfg = self.framework.config.get('plugin', {}) or {}
+        # 单插件上限：plugin.max_memory_mb（超限计数，连续 2 次自动卸载）
+        per_plugin_mb = int(plugin_cfg.get('max_memory_mb', 64) or 64)
+        # 进程级上限：与内核/服务级看门狗同源 service.watchdog.max_memory_mb
+        wd_cfg = ((self.framework.config.get('service') or {}).get('watchdog') or {})
+        proc_limit_mb = int(wd_cfg.get('max_memory_mb', 256) or 256)
 
         def monitor():
-            import psutil  # 延迟导入：psutil 导入较慢，仅在启动内存监控线程时加载
-            process = psutil.Process(os.getpid())
+            try:
+                import psutil  # 延迟导入：psutil 导入较慢，仅在启动时加载
+                process = psutil.Process(os.getpid())
+            except ImportError:
+                process = None
+                logger.warning("[内存监控] 未安装 psutil，跳过进程级内存监控（仍做插件级估算）")
 
             while self._memory_monitor_running:
                 threading.Event().wait(3)
 
                 try:
-                    # 进程级内存监控
-                    proc_mem = process.memory_info().rss / 1024 / 1024
-                    if proc_mem > max_mb * 1.5:  # 进程总内存超过 1.5 倍阈值
-                        logger.warning(
-                            f"[内存监控] 进程内存 {proc_mem:.1f}MB 超过警戒线 "
-                            f"({max_mb * 1.5:.0f}MB)，可能存在插件泄漏"
-                        )
+                    # 进程级内存监控（psutil 可选）
+                    if process is not None:
+                        proc_mem = process.memory_info().rss / 1024 / 1024
+                        if proc_mem > proc_limit_mb * 1.5:  # 进程总内存超过 1.5 倍阈值
+                            logger.warning(
+                                f"[内存监控] 进程内存 {proc_mem:.1f}MB 超过警戒线 "
+                                f"({proc_limit_mb * 1.5:.0f}MB)，可能存在插件泄漏"
+                            )
 
                     # 逐个插件粗略估计内存（通过模块全局变量大小）
                     with self._lock:
@@ -589,13 +595,13 @@ class LoadingMixin:
                                     if not v.__class__.__name__.startswith(('module', 'function', 'type'))
                                 ) / 1024 / 1024
 
-                                if module_size > max_mb:
+                                if module_size > per_plugin_mb:
                                     count = self._memory_violations.get(name, 0) + 1
                                     self._memory_violations[name] = count
                                     if count >= 2:
                                         logger.error(
                                             f"[内存监控] [{name}] 连续 {count} 次超限 "
-                                            f"({module_size:.1f}MB > {max_mb}MB)，自动卸载"
+                                            f"({module_size:.1f}MB > {per_plugin_mb}MB)，自动卸载"
                                         )
                                         # 异步卸载（不在此线程内执行耗时操作）
                                         threading.Thread(
@@ -606,7 +612,7 @@ class LoadingMixin:
                                     else:
                                         logger.warning(
                                             f"[内存监控] [{name}] 内存使用 {module_size:.1f}MB "
-                                            f"超过限制 {max_mb}MB（第 {count} 次警告）"
+                                            f"超过限制 {per_plugin_mb}MB（第 {count} 次警告）"
                                         )
                                 else:
                                     # 恢复正常，清除违规计数
@@ -620,4 +626,7 @@ class LoadingMixin:
 
         t = threading.Thread(target=monitor, daemon=True, name="memory_monitor")
         t.start()
-        logger.info(f"内存监控线程已启动 (采样间隔 3s, 单插件上限 {max_mb}MB)")
+        logger.info(
+            f"内存监控线程已启动 (采样间隔 3s, 单插件上限 {per_plugin_mb}MB, "
+            f"进程上限 {proc_limit_mb}MB)"
+        )

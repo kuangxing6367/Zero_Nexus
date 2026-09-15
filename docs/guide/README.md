@@ -1,9 +1,10 @@
 # Zeronus 开发文档
 
-> **Zeronus 是一个微内核式的事件驱动服务宿主**：内核只做加载扩展、路由事件、暴露扩展点契约；
-> 接入端、Web 后台、会话、定时、权限、数据库都是挂在内核上的可插拔扩展。
+> **Zeronus 是一个分三层的事件驱动服务宿主**：内核级（`core/`）维护服务与软件级活动、
+> 与数据库交互、检索三级状态、负责日志；服务级（`service/`）管 zkg 包管理与启停；
+> 软件级（`software/`）与上层服务级通讯并承载具体业务。
 >
-> **OneBot 11 只是默认接入端之一，不是身份。** 换一个 `ProtocolAdapter`，即可接入
+> **OneBot 11 只是默认接入端之一，不是身份。** 换一个接入端，即可接入
 > HTTP Webhook、定时事件、Telegram / Discord 等其它 IM，或任何「事件 → 处理 → 响应」的服务。
 
 本页是文档总入口。**先对号入座找到你的角色，按推荐路径读即可，不必从头读到尾。**
@@ -18,8 +19,9 @@
 
 1. [安装](./installation.md) —— 环境、依赖、目录结构
 2. [开始使用](./getting-started.md) —— 启动、接入平台、第一次对话、Web 后台
-3. [配置系统](./configuration.md) —— `config.yaml` 与官方扩展配置中心 `extensions.yaml`
-4. [部署上线](../advanced/deployment.md) —— 要放到服务器长期跑时再看
+3. [对接 IM 平台](./connect-im.md) —— OneBot 11 反向 WS 接入（NapCat / Lagrange / LLOneBot）
+4. [配置系统](./configuration.md) —— `config.yaml` 与软件级扩展清单 `extensions.yaml`
+5. [部署上线](../advanced/deployment.md) —— 要放到服务器长期跑时再看
 
 ### 角色 B：我要写业务插件（Python 开发者，最常见）
 
@@ -34,12 +36,12 @@
 
 ### 角色 C：我要接非 IM 的事件源 / 写自己的接入端（高级开发者）
 
-> 目标：把 Zeronus 当通用宿主，接 HTTP Webhook、纯定时、其它 IM，或理解内核分层。
+> 目标：把 Zeronus 当通用宿主，接 HTTP Webhook、纯定时、其它 IM，或理解三层分工。
 
 1. [最佳实践](./best-practices.md) —— **先读这篇**：纯定时、HTTP Webhook、带权限业务后台的完整范式
 2. [协议适配器 ProtocolAdapter](../api/advanced/protocol_adapter.md) —— 写自己接入端的契约与完整示例
-3. [架构总览](../advanced/architecture.md) —— 分层、启动时序、消息流转
-4. [扩展点（Hook 系统）](../api/advanced/hooks.md) —— 26 个标准扩展点契约
+3. [架构总览](../advanced/architecture.md) —— 三层分工、启动时序、消息流转
+4. [扩展点（Hook 系统）](../api/advanced/hooks.md) —— 内核 Hook 契约与全部挂载点
 5. [Framework 内核对象](../api/basic/framework.md) —— 底层容器与高级用法
 
 ---
@@ -52,7 +54,6 @@
 | ---- | ---- | -------- |
 | [安装](./installation.md) | 环境要求、依赖安装、目录结构、升级 | A |
 | [开始使用](./getting-started.md) | 启动、接入平台（可选）、第一次对话、Web 面板 | A |
-| [对接 IM 平台](./connect-im.md) | 启用 onebot_adapter、NapCat/Lagrange 反向 WS、富媒体与群管 API | A |
 | [配置系统](./configuration.md) | `config.yaml`、`extensions.yaml`、插件配置 schema | A/B |
 | [编写插件](./writing-plugins.md) | 从零写完整插件的手把手教程 | B |
 | [多轮会话](./session.md) | `wait_for` / `create_session` 多轮交互 | B |
@@ -66,21 +67,20 @@
 | [Event 事件对象](../api/basic/event.md) | 消息字段、富媒体段、传播控制、权限 | B |
 | [服务注册表 Services](../api/basic/services.md) | 官方扩展能力如何取用、DI 机制 | B/C |
 | [Framework 内核对象](../api/basic/framework.md) | 底层容器、生命周期与高级用法 | C |
-| [扩展点（Hook 系统）](../api/advanced/hooks.md) | 26 个标准扩展点 | B/C |
+| [扩展点（Hook 系统）](../api/advanced/hooks.md) | 内核 Hook 契约与挂载点清单 | B/C |
 | [协议适配器 ProtocolAdapter](../api/advanced/protocol_adapter.md) | 接入端契约、ActionProxy、内置 http_inject 示例 | C |
 
 ### 进阶 Advanced
 
 | 文档 | 内容 | 主要受众 |
 | ---- | ---- | -------- |
-| [架构总览](../advanced/architecture.md) | 分层、启动时序、消息流转、事件总线 | C |
+| [架构总览](../advanced/architecture.md) | 三层分工、启动时序、消息流转、三条边界 | C |
 | [插件加载与模块机制](../advanced/loader.md) | 合成包、相对/短名导入、热重载原理 | B/C |
-| [包管理器 zkg](../advanced/zkg.md) | 依赖驱动加载、多源索引与社区包 | C |
-| [数据库](../advanced/database.md) | 建表、CRUD、事务、SQLite/MySQL 方言适配 | B |
+| [包管理器 zkg](../advanced/zkg.md) | 机制包按需装配、manifest 依赖、多源与本地仓库 | C |
+| [数据库](../advanced/database.md) | 建表、CRUD、事务、SQLite/MySQL/PostgreSQL 方言适配 | B |
 | [权限系统](../advanced/permission.md) | 节点、权限组、继承、上下文、轨道、审计 | B |
-| [定时任务](../advanced/scheduler.md) | cron 任务、任务状态、与扩展点联动 | B |
+| [定时任务](../advanced/scheduler.md) | cron 任务、任务状态、与 Hook 联动 | B |
 | [部署上线](../advanced/deployment.md) | systemd / Docker / 反向代理 / 安全清单 | A |
-| [双核心（实验）](../advanced/dual-core.md) | 核心进程 / 宿主进程双进程隔离 | C |
 
 ---
 
@@ -99,17 +99,20 @@
 
 | 路径 | 作用 |
 |------|------|
-| `core/` | **内核**：装配、事件、路由、上下文、协议抽象、权限、数据库、包管理器（不含任何 OneBot 实现） |
-| `extensions/` | 官方扩展：`onebot_adapter` / `webui` / `session` / `scheduler` / `image_renderer` / `http_inject` / `http_api` |
-| `extensions.yaml` | **官方扩展配置中心**：开关与配置集中于此，启动自动扫描同步并合并进主配置 |
-| `plugins/` | 用户插件，每个一个子目录，入口为 `main.py` |
+| `core/` | **内核级**：装配、事件总线、路由、上下文、协议抽象、权限、数据库抽象、插件加载、Hook（不含任何 OneBot 实现） |
+| `service/` | **服务级**：`zkg/` 包管理器、`startup.py` sys/user 服务拉起、`watchdog.py` 看门狗 |
+| `software/extensions/` | **软件级**官方扩展：`onebot_adapter` / `webui` / `session` / `scheduler` / `image_renderer` / `http_inject` / `http_api` |
+| `software/plugins/` | **软件级**用户插件，每个一个子目录，入口为 `main.py` |
+| `repo/` | zkg 本地包仓库（离线兜底包源） |
+| `extensions.yaml` | 软件级官方扩展清单：开关与参数，启动自动扫描同步并合并进主配置 |
 | `data/` | 运行数据：日志、SQLite、`plugins_dat/` 插件私有数据 |
+| `web/` | Web 后台前端静态资源（由 webui 扩展服务） |
 | `tests/` | 自测脚本（如 `python tests/test_plugin_imports.py`） |
 
 ## 五、几个贯穿全局的设计约定
 
 - **协议无关**：业务插件优先用 `ctx.send_msg / ctx.api` 这类中立接口，不直接依赖平台特有字段，换接入端时零改动。
 - **同步/异步双份 API**：普通函数 handler 用同步方法，`async def` handler 用带 `a` 前缀的异步方法（推荐异步，避免阻塞事件循环）。
-- **代码与数据分离**：插件代码在 `plugins/<名>/`（更新会覆盖），运行期数据一律写 `ctx.get_data_dir()`（=`data/plugins_dat/<名>/`，长期保留）。
-- **能力来自服务**：内核不直接 import 扩展，官方能力通过服务注册表获取（如 `api_caller`、`scheduler`、`session_manager`、`web_server`）。
+- **代码与数据分离**：插件代码在 `software/plugins/<名>/`（更新会覆盖），运行期数据一律写 `ctx.get_data_dir()`（=`data/plugins_dat/<名>/`，长期保留）。
+- **能力来自服务**：内核不直接 import 软件级，官方能力通过服务注册表获取（如 `api_caller`、`scheduler`、`session_manager`、`web_server`）。
 - **机制≠策略**：内核只给原语（注册 / 分发 / 查询），命令别名、正则匹配、优先级裁决、权限门控等策略由扩展与配置决定。

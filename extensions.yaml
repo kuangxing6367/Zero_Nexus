@@ -1,4 +1,23 @@
+# ============================================================
+# 软件级官方扩展清单（software/extensions）
+# 说明：本文件是「软件级」扩展的启用清单，由启动扫描 software/extensions/ 自动同步，
+#       非配置中心——只记录每个扩展是否启用与端口等参数，不承载内核/服务级配置。
+# 内核级（core）与服务级（service）配置一律在 config.yaml。
+# ============================================================
 extensions:
+  onebot_adapter:
+    enabled: true
+    listen_host: 0.0.0.0
+    listen_port: 6830
+    access_token: ''
+  webui:
+    enabled: true
+    host: 127.0.0.1
+    port: 8080
+  session:
+    enabled: true
+  scheduler:
+    enabled: true
   http_api:
     enabled: false
     host: 127.0.0.1
@@ -11,18 +30,5 @@ extensions:
     port: 8901
     path: /hook
     token: ''
-  scheduler:
-    enabled: true
-  session:
-    enabled: true
-  webui:
-    enabled: true
-    host: 127.0.0.1
-    port: 8080
-  onebot_adapter:
-    enabled: true
-    listen_host: 0.0.0.0
-    listen_port: 6830
-    access_token: ''
   image_renderer:
     enabled: true

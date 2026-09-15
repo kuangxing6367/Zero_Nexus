@@ -13,30 +13,18 @@ import tempfile
 def test_render_banner_standard():
     from core.kernel.banner import render_banner
     lines = render_banner(
-        version="9.9.9", role="standard", dual={},
+        version="9.9.9",
         project_root="E:/工程/zernus",
         core_loaded=["onebot_adapter", "webui"], user_loaded=["demo"],
         config={"database": {"type": "sqlite", "path": "data/zernus.db"},
                 "onebot": {"listen_port": 6830}, "web": {"port": 8080}},
     )
     text = "\n".join(lines)
-    assert "Zeronus v9.9.9" in text
-    assert "单进程 (standard)" in text
+    assert "ZER NUS v9.9.9" in text
     assert "OneBot WS : 0.0.0.0:6830" in text
     assert "WebUI      : http://127.0.0.1:8080" in text
-    assert "官方插件 : 2 个" in text
+    assert "官方扩展 : 2 个" in text
     assert "用户插件 : 1 个" in text
-
-
-def test_render_banner_core_warns_experimental():
-    from core.kernel.banner import render_banner
-    lines = render_banner(
-        version="1.0.0", role="core", dual={"enabled": True},
-        project_root="/x", core_loaded=[], user_loaded=[], config={},
-    )
-    text = "\n".join(lines)
-    assert "双核心 · 核心进程 (实验版 ⚠)" in text
-    assert "长期测试版本" in text
 
 
 def test_read_version():

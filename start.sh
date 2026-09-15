@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-# Zeronus OneBot 框架启动脚本
+# ZER NUS 三层架构启动脚本
 # 用法: bash start.sh
 # ============================================================
 
-# 项目目录（脚本所在目录）
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
 
@@ -35,6 +34,6 @@ pip install --upgrade pip -q -i https://pypi.tuna.tsinghua.edu.cn/simple
 pip install -r requirements.txt -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --trusted-host pypi.tuna.tsinghua.edu.cn
 
-# 启动框架
-echo "启动 Zeronus..."
+# 启动：main.py → 内核级(core) → 服务级(sys/user) → 软件级(extensions/plugins)
+echo "启动 ZER NUS（三层架构）..."
 python3 main.py

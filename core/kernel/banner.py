@@ -1,8 +1,7 @@
 """启动横幅渲染（内核细模块，纯函数，无框架依赖）。
 
 渲染逻辑与 I/O 分离：``render_banner`` 只算出行列表，由调用方决定如何输出
-（默认 ``emit_banner`` 用传入的 logger 逐行 info）。宿主进程（双核心）不占控制台，
-调用方应在 ``role == 'host'`` 时跳过。
+（默认 ``emit_banner`` 用传入的 logger 逐行 info）。
 """
 
 from __future__ import annotations
@@ -21,16 +20,12 @@ def read_version(project_root: str) -> str:
         return "?"
 
 
-def render_banner(*, version: str, role: str, dual: dict,
-                   project_root: str, core_loaded: list, user_loaded: list,
-                   config: dict) -> List[str]:
+def render_banner(*, version: str, project_root: str, core_loaded: list,
+                  user_loaded: list, config: dict) -> List[str]:
     """返回横幅行列表（不参与 I/O）。"""
-    if role == "core":
-        mode = "双核心 · 核心进程 (实验版 ⚠)"
-    elif dual.get("enabled"):
-        mode = "双核心 (实验版 ⚠)"
-    else:
-        mode = "单进程 (standard)"
+    project_name = (config.get("project") or {}).get("name") or "ZER NUS"
+    # VERSION 文件常带 v 前缀（与 git tag 一致）；此处统一归一，避免显示成 vv0.0.1
+    version = (version or "?").lstrip("vV") or "?"
 
     db_cfg = config.get("database", {})
     db_type = db_cfg.get("type", "sqlite")
@@ -48,40 +43,35 @@ def render_banner(*, version: str, role: str, dual: dict,
         web = config.get("web", {})
         endpoints.append(
             f"WebUI      : http://{web.get('host', '127.0.0.1')}:{web.get('port', 8080)}")
-    if dual.get("enabled") or role == "core":
-        if "http_api" in core_loaded:
-            ha = config.get("http_api", {})
-            if ha.get("enabled"):
-                endpoints.append(
-                    f"HTTP API   : http://{ha.get('host', '127.0.0.1')}:{ha.get('port', 1145)}")
+    if "http_api" in core_loaded:
+        ha = config.get("http_api", {})
+        if ha.get("enabled"):
+            endpoints.append(
+                f"HTTP API   : http://{ha.get('host', '127.0.0.1')}:{ha.get('port', 1145)}")
 
     lines = [
         "=" * 60,
-        f" Zeronus v{version}",
-        f" 进程模式: {mode}",
+        f" {project_name} v{version}",
         "=" * 60,
         f" 数据目录 : {os.path.join(project_root, 'data')}",
         f" 数据库   : {db_desc}",
-        f" 官方插件 : {len(core_loaded)} 个 → {', '.join(core_loaded) if core_loaded else '(无)'}",
+        f" 官方扩展 : {len(core_loaded)} 个 → {', '.join(core_loaded) if core_loaded else '(无)'}",
         f" 用户插件 : {len(user_loaded)} 个 → {', '.join(user_loaded) if user_loaded else '(无)'}",
     ]
     if endpoints:
         lines.append(" 监听端口 :")
         for ep in endpoints:
             lines.append(f"   - {ep}")
-    if dual.get("enabled") or role == "core":
-        lines.append("-" * 60)
-        lines.append(" ⚠ 双核心为长期测试版本，不保证稳定，不建议用于生产/自用")
     lines.append("=" * 60)
     return lines
 
 
-def emit_banner(*, version: str, role: str, dual: dict, project_root: str,
+def emit_banner(*, version: str, project_root: str,
                 core_loaded: list, user_loaded: list, config: dict,
                 logger) -> None:
-    """渲染并逐行输出到 logger（宿主进程调用方自行跳过）。"""
+    """渲染并逐行输出到 logger。"""
     for ln in render_banner(
-        version=version, role=role, dual=dual, project_root=project_root,
+        version=version, project_root=project_root,
         core_loaded=core_loaded, user_loaded=user_loaded, config=config,
     ):
         logger.info(ln)

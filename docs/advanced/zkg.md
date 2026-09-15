@@ -1,6 +1,7 @@
 # 包管理器 zkg
 
 Zeronus 的官方"机制包"不是无条件全部加载的，而是由 **zkg（依赖驱动加载器）** 按需装配。
+zkg 属于**服务级（`service/zkg/`）**，是服务级提供能力装配的机制。
 
 ## 一、为什么要有它
 
@@ -8,7 +9,7 @@ Zeronus 的官方"机制包"不是无条件全部加载的，而是由 **zkg（�
 zkg 的思路是：**谁声明了依赖，才加载谁**。
 
 ```
-plugins/*（用户插件）+ extensions/*（官方扩展）
+software/plugins/*（用户插件）+ software/extensions/*（官方扩展）
         │  各自的 manifest 声明 dependencies
         ▼
   scan  →  resolve（依赖图）  →  rebuild（plugins.db）  →  只加载「有依赖方」的机制包
@@ -56,7 +57,7 @@ plugins/*（用户插件）+ extensions/*（官方扩展）
 
 ## 五、默认源配置
 
-`core/zkg/defaults.py` 提供默认源：
+`service/zkg/defaults.py` 提供默认源：
 
 ```python
 # 示意
@@ -94,7 +95,7 @@ python repo/build.py --split 4   # 拆成 4 份分片（dist/indices/index-0..3.
 ## 七、加载流程（源码视角）
 
 ```python
-# core/zkg/loader.py —— Loader.run()
+# service/zkg/loader.py —— Loader.run()
 plugin_manifests = scanner.scan_dir(plugins_dir)      # 扫清单
 res              = resolver.resolve(plugin_manifests) # 解析依赖图
 stats            = depdb.rebuild(plugin_manifests, res)  # 重建 plugins.db
@@ -130,7 +131,7 @@ dependencies: ["example"]
 
 ## 九、与插件加载器的区别
 
-| | `core/zkg/` | `core/plugin_loader/` |
+| | `service/zkg/` | `core/plugin_loader/` |
 | --- | --- | --- |
 | 管什么 | **机制包**（能力底座）的按需装配 | **插件**（官方扩展 + 用户插件）的扫描/加载/热重载 |
 | 触发 | 启动时按依赖解析 | 启动与热重载 |

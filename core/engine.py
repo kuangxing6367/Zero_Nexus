@@ -37,11 +37,7 @@ logger = logging.getLogger('zernus')
 class Framework:
     """框架核心引擎（装配层）"""
 
-    def __init__(self, config_path: str = None, role: str = 'standard', ipc_client=None):
-        # 运行角色：standard=单进程（默认）/ core=双进程核心 / host=双进程宿主
-        # ipc_client：宿主模式下注入的 IPC 客户端（供 RemoteDatabase 使用）
-        self._role = role
-        self._ipc_client = ipc_client
+    def __init__(self, config_path: str = None):
         # 记录实际使用的配置文件路径（供 Web API 读写 config.yaml 使用）
         if config_path is None:
             config_path = os.path.join(
@@ -60,15 +56,10 @@ class Framework:
         # 扩展点注册表
         self.hooks = HookRegistry(self)
 
-        # 数据库：宿主模式下用 RemoteDatabase（经 IPC RPC 到核心进程执行）；否则真实数据库
-        if role == 'host' and ipc_client is not None:
-            from core.ipc.remote_db import RemoteDatabase
-            self.db = RemoteDatabase(ipc_client)
-            logger.info("数据库已切换为 RemoteDatabase（双进程宿主模式，RPC 到核心）")
-        else:
-            self.db = init_db(self.config['database'])
-            # 把扩展点注册表注入存储引擎，使 db.query/execute 能触发 db.* hook
-            self.db._hooks = self.hooks
+        # 数据库：真实数据库（SQLite / MySQL / PostgreSQL 三方言，由 config.database.type 决定）
+        self.db = init_db(self.config['database'])
+        # 把扩展点注册表注入存储引擎，使 db.query/execute 能触发 db.* hook
+        self.db._hooks = self.hooks
 
         # 数据库专用线程池
         self._db_executor = ThreadPoolExecutor(
@@ -92,18 +83,21 @@ class Framework:
         self._loaded_extensions = []
         self._loaded_user_plugins = []
 
+        # Web API 路由注册表由 webui 扩展在启动时注入（fw.api_registry）；
+        # 内核只持中立缓冲，绝不直接依赖 Web 包（保持层倒置为 0）。
+        self.api_registry = None
+        self._pending_api_routes = []
+
         # 心跳参数
         self._heartbeat_interval = self.config['plugin'].get('heartbeat_interval', 60)
         self._heartbeat_task = None
         self._running = False
         self.loop = None
-        # 双进程核心进程注入的 IPC 服务端（供终端把宿主侧命令转发过去）
-        self.ipc_server = None
 
-        # 内存看门狗参数
-        mem_cfg = self.config.get('memory', {})
-        self._memory_limit_mb = mem_cfg.get('limit_mb', 120)
-        self._memory_check_interval = mem_cfg.get('check_interval', 30)
+        # 内存看门狗参数（统一取自 service.watchdog，与服务级看门狗同一来源）
+        wd_cfg = ((self.config.get('service') or {}).get('watchdog') or {})
+        self._memory_limit_mb = int(wd_cfg.get('max_memory_mb', 256))
+        self._memory_check_interval = int(wd_cfg.get('interval', 30))
         self._memory_watchdog_task = None
 
         import time
@@ -150,7 +144,7 @@ class Framework:
             if os.path.isabs(plugin_dir):
                 return plugin_dir
             return os.path.join(os.path.dirname(os.path.dirname(__file__)), plugin_dir)
-        return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'plugins')
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'software', 'plugins')
 
     def _get_plugins_dat_dir(self) -> str:
         """获取插件数据/配置目录路径"""
@@ -176,14 +170,9 @@ class Framework:
         return read_version(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     def _print_startup_banner(self):
-        """启动横幅（委托 core.kernel.banner，宿主进程跳过）。"""
-        role = getattr(self, '_role', 'standard')
-        if role == 'host':
-            return
+        """启动横幅（委托 core.kernel.banner）。"""
         emit_banner(
             version=self._read_version(),
-            role=role,
-            dual=self.config.get('dual_process', {}) or {},
             project_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             core_loaded=getattr(self, '_loaded_extensions', []),
             user_loaded=getattr(self, '_loaded_user_plugins', []),
@@ -211,13 +200,6 @@ class Framework:
 
     def _load_extensions(self):
         runtime.load_extensions(self)
-
-    @staticmethod
-    def _read_plugin_process_tag(main_file: str):
-        return runtime.read_plugin_process_tag(main_file)
-
-    def _core_plugin_is_core_side(self, name: str, main_file: str, explicit_core) -> bool:
-        return runtime.core_plugin_is_core_side(name, main_file, explicit_core)
 
     # ── 事件分发（委托 core.runtime.dispatch）──
 
@@ -266,20 +248,23 @@ class Framework:
                 except Exception as e:
                     logger.warning(f"权限过期清理任务异常: {e}")
 
-            sched = getattr(self.scheduler, '_scheduler', None)
+            sched = self.scheduler
             if sched is None:
                 return
-            sched.add_job(
-                _cleanup_expired_perms,
-                'cron', minute=17, id='builtin_perm_cleanup',
-                replace_existing=True, misfire_grace_time=600,
-            )
+            sched.add_plugin_task({
+                'plugin_name': 'builtin',
+                'id': 'builtin_perm_cleanup',
+                'cron_expression': '17 * * * *',
+                'handler': _cleanup_expired_perms,
+                'handler_name': '_cleanup_expired_perms',
+                'description': '权限过期清理',
+            })
             logger.debug("内置定时任务已注册: 权限过期清理（每小时第 17 分钟）")
         except Exception as e:
             logger.warning(f"注册内置定时任务失败: {e}")
 
     async def terminal_exec(self, name: str, args: str = '') -> str:
-        """执行一条终端命令并捕获其输出（供双进程另一侧经 IPC 调用）。"""
+        """执行一条终端命令并捕获其输出。"""
         import io
         import contextlib
         handler = terminal_commands.get(name)

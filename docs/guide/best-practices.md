@@ -100,7 +100,7 @@ def audit(action, params, bot, result):
 - 默认管理员 `admin / admin123` 首次登录后立刻改；
 - `http_api` 的 `allow_db` 默认关闭——它允许执行任意 SQL（含写库/删表），非必要不要开；
 - 密钥走环境变量：配置支持 `${VAR}` / `${VAR:-default}`；
-- 反向代理后记得把 `security.whitelist_ips` 调整为你的内网段。
+- 反向代理场景保持 `web.host: 127.0.0.1`，让框架只接受反代转发；来源 IP 限制在反向代理层配置。
 
 ## 六、上线前自查
 

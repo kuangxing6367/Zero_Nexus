@@ -370,8 +370,9 @@ INSERT IGNORE INTO perm_groups (name, display_name, weight, is_default, created_
     VALUES ('default', '默认组', 0, 1, UNIX_TIMESTAMP());
 
 -- 默认管理员账号（密码: admin123）
+-- 哈希格式为框架自带的 pbkdf2_sha256（stdlib hashlib），不依赖可选的 bcrypt。
 INSERT INTO admin_users (username, password_hash, role) VALUES
-    ('admin', '$2b$12$YsniVDvsFqQU0ENEUQNVhuVqpbr/e03SBWLSEcaUFkmeQzOaMujpq', 'super');
+    ('admin', 'pbkdf2_sha256$200000$94636c3c8d7aff1965bb27e9c7f5fb1c$d6b141cc4cb5c5c047a1e89fb10e9035060b4a2076d118f0dc81c8a667d29232', 'super');
 
 -- 默认系统配置
 INSERT INTO system_config (config_key, config_value, description) VALUES

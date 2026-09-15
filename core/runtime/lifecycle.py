@@ -161,44 +161,15 @@ async def start(fw):
     except Exception as e:
         logger.error(f"启动扩展点异常: {e}", exc_info=True)
 
-    # 10. 终端命令注册（核心/宿主两个进程都注册）；交互输入只在非宿主进程启动
+    # 10. 终端命令注册 + 交互输入启动
     register_builtins(fw)
-    if getattr(fw, "_role", "standard") != "host":
-        fw.terminal.start()
+    fw.terminal.start()
 
-    # 10.5 启动 WebSocket 事件推送服务（若 config.ws.enabled）
-    _ws_cfg = fw.config.get('ws') or {}
-    if _ws_cfg.get('enabled'):
-        try:
-            from core.api.ws_events import start_ws_server
-            ws_port = int(_ws_cfg.get('port', 6840))
-            ws_host = _ws_cfg.get('host', '0.0.0.0')
-            ws_events = _ws_cfg.get('events')
-            asyncio.ensure_future(
-                start_ws_server(fw, ws_host, ws_port, ws_events, fw.loop)
-            )
-            logger.info(f"WebSocket 事件推送已请求启动: ws://{ws_host}:{ws_port}/ws")
-        except Exception as e:
-            logger.error(f"WebSocket 事件推送启动失败: {e}")
-
-    # 10.6 启动 gRPC 服务（若 config.grpc.enabled）
-    _grpc_cfg = fw.config.get('grpc') or {}
-    if _grpc_cfg.get('enabled'):
-        try:
-            from core.api.grpc import start_grpc_server
-            grpc_port = int(_grpc_cfg.get('port', 50051))
-            grpc_host = _grpc_cfg.get('host', '0.0.0.0')
-            srv = start_grpc_server(fw, grpc_host, grpc_port)
-            if srv is not None:
-                fw._grpc_server = srv
-                logger.info(f"gRPC 服务已请求启动: {grpc_host}:{grpc_port}")
-        except Exception as e:
-            logger.error(f"gRPC 服务启动失败: {e}")
+    # 10.5/10.6 WebSocket / gRPC 启动已迁出内核：由 webui 扩展在 register()
+    # 内按 config.ws / config.grpc 自行拉起（内核不再硬编码 Web 传输栈）。
 
     emit_banner(
         version=fw._read_version(),
-        role=getattr(fw, "_role", "standard"),
-        dual=fw.config.get("dual_process", {}) or {},
         project_root=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         core_loaded=getattr(fw, "_loaded_extensions", []),
         user_loaded=getattr(fw, "_loaded_user_plugins", []),

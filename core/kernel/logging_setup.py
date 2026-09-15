@@ -5,7 +5,7 @@
 
 约定：
 - 控制台 + 滚动文件（data/logs/zernus.log，10MB×5）双输出。
-- 第三方库（apscheduler / websocket）降噪到 WARNING。
+- 第三方库（按需在扩展侧降噪）降噪到 WARNING。
 """
 
 from __future__ import annotations
@@ -46,6 +46,4 @@ def setup_logging(config: dict, project_root: str,
     for h in (extra_handlers or []):
         root.addHandler(h)
 
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
-    logging.getLogger("websocket").setLevel(logging.WARNING)
     return log_file

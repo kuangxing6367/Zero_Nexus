@@ -169,6 +169,75 @@ def _auto_create_tables(database):
     _migrate_dynamic_commands_table(database)
     _migrate_dynamic_commands_handler(database)
     _migrate_perm_tables(database)
+    _ensure_admin_account(database)
+
+
+# 默认管理员（与 sql/init.sql 种子一致；密码 admin123，首次登录后请立刻修改）
+_DEFAULT_ADMIN_USERNAME = 'admin'
+_DEFAULT_ADMIN_HASH = (
+    'pbkdf2_sha256$200000$94636c3c8d7aff1965bb27e9c7f5fb1c'
+    '$d6b141cc4cb5c5c047a1e89fb10e9035060b4a2076d118f0dc81c8a667d29232'
+)
+
+
+def _ensure_admin_account(database):
+    """确保存在可用的超级管理员账号（启动自愈，避免「建了库却登不进后台」）。
+
+    三种情形：
+    1. 无 admin_users 表 → 交给 init.sql 处理，跳过；
+    2. 表存在但账号为空 → 用框架自带 pbkdf2 哈希种入默认账号；
+    3. 存在遗留 bcrypt 账号且当前环境未安装 bcrypt（会彻底无法登录）：
+       - 若该账号仍是「从未登录过的种子账号」，用默认密码就地重置为 pbkdf2；
+       - 若账号已登录过（说明当时装过 bcrypt），只告警，绝不静默改密。
+    """
+    try:
+        if not database.table_exists('admin_users'):
+            return
+
+        rows = database.query(
+            "SELECT id, username, password_hash, token, last_login_at FROM admin_users"
+        ) or []
+
+        if not rows:
+            database.execute(
+                "INSERT INTO admin_users (username, password_hash, role) VALUES (%s, %s, %s)",
+                (_DEFAULT_ADMIN_USERNAME, _DEFAULT_ADMIN_HASH, 'super'),
+            )
+            logger.warning(
+                "[admin] 数据库无任何管理员账号，已种入默认账号 "
+                f"{_DEFAULT_ADMIN_USERNAME}/admin123（请登录后立即修改密码）"
+            )
+            return
+
+        from importlib.util import find_spec
+        has_bcrypt = find_spec('bcrypt') is not None
+        if has_bcrypt:
+            return
+
+        for row in rows:
+            h = row['password_hash'] or ''
+            if not h.startswith('$2'):
+                continue
+            never_logged_in = not row.get('token') and not row.get('last_login_at')
+            if never_logged_in:
+                database.execute(
+                    "UPDATE admin_users SET password_hash = %s WHERE id = %s",
+                    (_DEFAULT_ADMIN_HASH, row['id']),
+                )
+                logger.warning(
+                    "[admin] 账号 %s 的密码为遗留 bcrypt 哈希，而当前环境未安装 bcrypt，"
+                    "无法登录；该账号从未登录过，已按默认密码 admin123 重置为 pbkdf2。"
+                    "请登录后立即修改密码。",
+                    row['username'],
+                )
+            else:
+                logger.error(
+                    "[admin] 账号 %s 的密码为遗留 bcrypt 哈希，而当前环境未安装 bcrypt，"
+                    "将无法登录。请执行 pip install bcrypt 恢复访问。",
+                    row['username'],
+                )
+    except Exception as e:
+        logger.warning(f"[admin] 管理员账号自愈检查跳过: {e}")
 
 
 def _migrate_commands_table(database):

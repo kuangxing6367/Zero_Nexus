@@ -1,78 +1,108 @@
 """
-定时任务调度器
-基于 APScheduler AsyncIOScheduler 实现 cron 任务调度
-任务 handler 支持 async def（直接 await）和普通 def（转线程执行），不阻塞事件循环
+定时任务调度器（stdlib 实现，零第三方依赖）
+
+基于 asyncio 的自旋 tick：每 5 秒检查一次，匹配 5 字段 cron
+（minute hour day month day_of_week），命中且本分钟尚未触发则执行。
+day_of_week 采用 Python datetime.weekday() 约定（0=周一 … 6=周日），
+与 APScheduler CronTrigger 默认约定一致。
+
+这是内核机制层，不绑定任何第三方调度栈；对外只暴露薄薄的
+add_plugin_task / remove_plugin_task(s) / remove_job / pause_task /
+resume_task / get_jobs，与具体 Web/协议扩展解耦。
 """
 import asyncio
 import logging
 from datetime import datetime
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from core.hooks import HookPoints
 
 logger = logging.getLogger('zernus')
 
 
+def _field_match(value: int, expr, min_v: int, max_v: int) -> bool:
+    """匹配单个 cron 字段。支持 * / ? / , / - / /step 组合。"""
+    expr = (expr or '*').strip()
+    if expr in ('*', '?'):
+        return True
+    for part in expr.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        step = 1
+        if '/' in part:
+            rng, step_s = part.split('/', 1)
+            step = int(step_s)
+            part = rng
+        if part in ('*', '?'):
+            lo, hi = min_v, max_v
+        elif '-' in part:
+            lo_s, hi_s = part.split('-', 1)
+            lo, hi = int(lo_s), int(hi_s)
+        else:
+            lo = hi = int(part)
+        if lo <= value <= hi and (value - lo) % step == 0:
+            return True
+    return False
+
+
 class TaskScheduler:
-    """定时任务调度器"""
+    """内核定时任务调度器（stdlib 实现）"""
 
     def __init__(self, framework):
         self.framework = framework
-        self._scheduler = None
-        self._plugin_tasks = {}  # task_id -> task_info
+        self._jobs = {}            # task_id -> job info（含解析后的 cron 字段）
+        self._running = False
+        self._task = None
+
+    # ── 生命周期 ──
 
     def start(self, loop=None):
-        """启动调度器（绑定主事件循环）"""
-        if loop is not None:
-            self._scheduler = AsyncIOScheduler(event_loop=loop)
-        else:
-            self._scheduler = AsyncIOScheduler()
-        self._scheduler.start()
-        logger.info("定时任务调度器已启动（AsyncIOScheduler）")
+        """启动调度器（绑定主事件循环）。loop 缺省取 framework.loop。"""
+        if loop is None:
+            loop = getattr(self.framework, 'loop', None)
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        self._running = True
+        self._task = asyncio.ensure_future(self._tick_loop(), loop=loop)
+        logger.info("定时任务调度器已启动（stdlib cron）")
 
     def stop(self):
         """停止调度器"""
-        if self._scheduler:
-            try:
-                self._scheduler.shutdown(wait=False)
-            except Exception as e:
-                logger.warning(f"调度器停止异常: {e}")
+        self._running = False
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
         logger.info("定时任务调度器已停止")
+
+    # ── 任务注册 ──
 
     def add_plugin_task(self, task_info: dict):
         """
         添加插件定时任务
-        :param task_info: {id, plugin_name, cron_expression, handler, handler_name, description}
+        :param task_info: {id, plugin_name, cron_expression, handler,
+                           handler_name, description}
         """
-        task_id = f"plugin_{task_info['plugin_name']}_{task_info['id']}"
+        plugin_name = task_info['plugin_name']
+        jid = task_info.get('id') or task_info.get('handler_name') \
+            or (task_info['handler'].__name__ if callable(task_info.get('handler')) else None)
+        if jid is None:
+            logger.error(f"添加任务失败: 缺少 id/handler_name [{plugin_name}]")
+            return
+        task_id = f"plugin_{plugin_name}_{jid}"
         cron_expr = task_info['cron_expression']
 
-        # 解析 cron 表达式（5字段）
         parts = cron_expr.strip().split()
         if len(parts) != 5:
             logger.error(f"cron表达式格式错误: {cron_expr}")
             return
-
         try:
-            trigger = CronTrigger(
-                minute=parts[0],
-                hour=parts[1],
-                day=parts[2],
-                month=parts[3],
-                day_of_week=parts[4],
-                timezone='Asia/Shanghai'
-            )
-        except Exception as e:
+            # 仅做基础可解析性校验；真实匹配在 tick 时进行
+            for p in parts:
+                _field_match(0, p, 0, 59)
+        except (ValueError, TypeError) as e:
             logger.error(f"cron表达式解析失败: {cron_expr} - {e}")
             return
 
-        # 获取插件模块的 handler 函数
-        # 支持两种方式：
-        #   - task_info['handler'] 为可调用对象（ctx.add_job 直接传入闭包/局部函数）
-        #   - task_info['handler_name'] 为模块级函数名（旧式，由插件 loader 解析）
-        plugin_name = task_info['plugin_name']
         handler = task_info.get('handler')
         handler_name = task_info.get('handler_name') or (
             handler.__name__ if callable(handler) else None
@@ -87,21 +117,20 @@ class TaskScheduler:
             logger.error(f"添加任务失败: 函数 {handler_name} 在 [{plugin_name}] 中不存在或不可调用")
             return
 
-        self._scheduler.add_job(
-            func=self._run_job,
-            args=(handler, plugin_name),
-            trigger=trigger,
-            id=task_id,
-            name=task_info.get('description', ''),
-            replace_existing=True
-        )
-
-        self._plugin_tasks[task_id] = task_info
+        self._jobs[task_id] = {
+            'plugin_name': plugin_name,
+            'handler': handler,
+            'handler_name': handler_name,
+            'description': task_info.get('description', ''),
+            'cron': parts,
+            'paused': False,
+            'last_fire': None,
+        }
         logger.info(f"定时任务已注册: [{plugin_name}] {cron_expr} → {handler_name}")
 
     async def _run_job(self, handler, plugin_name: str):
         """执行任务：async handler 直接 await，sync handler 转线程"""
-        handler_name = handler.__name__
+        handler_name = getattr(handler, '__name__', 'job')
         hooks = self.framework.hooks
         await hooks.trigger_async(
             HookPoints.CRON_TASK_TRIGGER_BEFORE, plugin_name=plugin_name, handler_name=handler_name
@@ -144,37 +173,64 @@ class TaskScheduler:
         except Exception as e:
             logger.error(f"更新任务状态失败: {e}")
 
+    # ── 任务管理 ──
+
     def remove_plugin_tasks(self, plugin_name: str):
         """移除某插件的所有任务"""
-        to_remove = [tid for tid, info in self._plugin_tasks.items()
-                     if info['plugin_name'] == plugin_name]
-        for tid in to_remove:
-            try:
-                self._scheduler.remove_job(tid)
-                self._plugin_tasks.pop(tid, None)
-            except Exception:
-                pass
+        for tid in [t for t, info in self._jobs.items() if info['plugin_name'] == plugin_name]:
+            self._jobs.pop(tid, None)
 
     def remove_job(self, task_key: str):
         """按任务键移除单个任务（ctx.remove_job 用）"""
-        try:
-            self._scheduler.remove_job(task_key)
-            self._plugin_tasks.pop(task_key, None)
-        except Exception:
-            pass
+        self._jobs.pop(task_key, None)
 
     def pause_task(self, task_key: str):
         """暂停指定任务"""
-        try:
-            self._scheduler.pause_job(task_key)
+        job = self._jobs.get(task_key)
+        if job is not None:
+            job['paused'] = True
             logger.debug(f"定时任务已暂停: {task_key}")
-        except Exception as e:
-            logger.warning(f"暂停任务失败 {task_key}: {e}")
 
     def resume_task(self, task_key: str):
         """恢复指定任务"""
-        try:
-            self._scheduler.resume_job(task_key)
+        job = self._jobs.get(task_key)
+        if job is not None:
+            job['paused'] = False
+            job['last_fire'] = None
             logger.debug(f"定时任务已恢复: {task_key}")
-        except Exception as e:
-            logger.warning(f"恢复任务失败 {task_key}: {e}")
+
+    def get_jobs(self) -> list:
+        """获取所有任务（兼容旧 APScheduler 形态：id / next_run / trigger）"""
+        return [
+            {'id': tid, 'next_run': None, 'trigger': ' '.join(info['cron'])}
+            for tid, info in self._jobs.items()
+        ]
+
+    # ── 调度循环 ──
+
+    async def _tick_loop(self):
+        while self._running:
+            try:
+                await asyncio.sleep(5)
+                if not self._running:
+                    break
+                now = datetime.now()
+                minute_key = (now.year, now.month, now.day, now.hour, now.minute)
+                for info in self._jobs.values():
+                    if info['paused']:
+                        continue
+                    c = info['cron']
+                    if (_field_match(now.minute, c[0], 0, 59) and
+                            _field_match(now.hour, c[1], 0, 23) and
+                            _field_match(now.day, c[2], 1, 31) and
+                            _field_match(now.month, c[3], 1, 12) and
+                            _field_match(now.weekday(), c[4], 0, 6)):
+                        if info['last_fire'] != minute_key:
+                            info['last_fire'] = minute_key
+                            asyncio.ensure_future(
+                                self._run_job(info['handler'], info['plugin_name'])
+                            )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"调度器 tick 异常: {e}")

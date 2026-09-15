@@ -2,7 +2,7 @@
 协议适配器层（core.adapters）
 
 原 framework/messaging/protocol.py（ProtocolAdapter / ActionProxy / ServiceRegistry）
-已迁至 core.adapters（协议接入层是微内核的稳定扩展点契约之一）。
+已迁至 core.adapters（协议接入层是内核的稳定扩展点契约之一）。
 framework/messaging/protocol.py 仅做透明重导出，调用方零改动。
 
 对外公开：

@@ -1,11 +1,12 @@
-"""事件总线（内核细模块）。
+"""事件总线（内核最小原语，全仓唯一实现）。
 
-支持 on(event_name, handler) 与 emit(event_name, payload)。
+对外 API：
+- subscribe(event_name, plugin_name, handler) / unsubscribe(...) / unsubscribe_plugin(...)
+- aemit(event_name, payload)  异步发布，handler 支持 async def（直接 await）与普通 def（转线程）
+- emit(event_name, payload)   同步桥接，供旧插件/非 loop 线程使用
 
-异步模型：
-- aemit() 异步发布，订阅 handler 支持 async def（直接 await）和普通 def（转线程）
-- emit()  同步桥接，供旧插件/非 loop 线程使用
-- 订阅/退订线程安全（插件可能在 executor 线程中注册）
+订阅与退订线程安全（插件可能在 executor 线程中注册）。
+``core.messaging.event_bus`` 对本模块做透明重导出，不另存实现。
 """
 import asyncio
 import logging

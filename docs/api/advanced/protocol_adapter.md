@@ -175,8 +175,8 @@ extensions:
 
 参考实现：
 
-- `extensions/onebot_adapter/main.py` —— 完整双向接入端（WS 服务端 + 动作封装 + 连接管理）
-- `extensions/http_inject/main.py` —— 极简单向事件源（HTTP → `dispatch_event`）
+- `software/extensions/onebot_adapter/main.py` —— 完整双向接入端（WS 服务端 + 动作封装 + 连接管理）
+- `software/extensions/http_inject/main.py` —— 极简单向事件源（HTTP → `dispatch_event`）
 
 ## 六、多实例与 bot 参数
 

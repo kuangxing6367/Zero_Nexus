@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS admin_users (
     id              INT             AUTO_INCREMENT  PRIMARY KEY,
     username        VARCHAR(50)     NOT NULL        COMMENT '用户名',
-    password_hash   VARCHAR(255)    NOT NULL        COMMENT '密码哈希(bcrypt)',
+    password_hash   VARCHAR(255)    NOT NULL        COMMENT '密码哈希(pbkdf2_sha256)',
     token           VARCHAR(2048)   DEFAULT NULL    COMMENT '登录令牌(2048位随机)',
     token_created_at DATETIME       DEFAULT NULL    COMMENT '令牌签发时间',
     role            ENUM('super','admin')           DEFAULT 'admin'  COMMENT '角色',
@@ -402,8 +402,10 @@ INSERT IGNORE INTO perm_groups (name, display_name, weight, is_default, created_
 
 -- 默认管理员账号（密码需要在首次启动时强制修改）
 -- 默认密码: admin123 （生产环境务必修改）
+-- 哈希格式为框架自带的 pbkdf2_sha256（stdlib hashlib），不依赖可选的 bcrypt。
+-- 与 software/extensions/webui/password.py::hash_password 输出一致。
 INSERT INTO admin_users (username, password_hash, role) VALUES
-    ('admin', '$2b$12$YsniVDvsFqQU0ENEUQNVhuVqpbr/e03SBWLSEcaUFkmeQzOaMujpq', 'super');
+    ('admin', 'pbkdf2_sha256$200000$94636c3c8d7aff1965bb27e9c7f5fb1c$d6b141cc4cb5c5c047a1e89fb10e9035060b4a2076d118f0dc81c8a667d29232', 'super');
 
 -- 默认系统配置
 INSERT INTO system_config (config_key, config_value, description) VALUES

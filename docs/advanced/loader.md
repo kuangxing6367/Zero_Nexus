@@ -105,7 +105,7 @@ greet_text: "Hello"
 
 | 现象 | 原因 / 解法 |
 | ---- | ---- |
-| `ImportError: attempted relative import with no known parent package` | 插件不是包。用框架加载（`register(ctx)` 入口），别直接 `python plugins/x/main.py` |
+| `ImportError: attempted relative import with no known parent package` | 插件不是包。用框架加载（`register(ctx)` 入口），别直接 `python software/plugins/x/main.py` |
 | 两个插件互相串了模块 | 你用了裸短名跨插件引用；改成相对导入 |
 | 改了子模块代码但没生效 | 热重载即可；框架按源码现场编译，不需要清 `__pycache__` |
 | 插件里有 `core/`、`db.py` 等同名目录/文件 | 会被预加载隔离，但建议避开与标准库/常用名冲突 |

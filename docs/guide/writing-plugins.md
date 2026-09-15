@@ -4,7 +4,7 @@
 
 ## 一、最小插件
 
-一个插件就是一个目录，放在 `plugins/` 下，入口固定为 `main.py`，必须提供 `register(ctx)`：
+一个插件就是一个目录，放在 `software/plugins/` 下，入口固定为 `main.py`，必须提供 `register(ctx)`：
 
 ```
 plugins/
@@ -13,7 +13,7 @@ plugins/
 ```
 
 ```python
-# plugins/greeter/main.py
+# software/plugins/greeter/main.py
 def register(ctx):
     ctx.command("/hello", on_hello, description="打个招呼")
 

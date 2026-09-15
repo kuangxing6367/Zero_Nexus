@@ -1,7 +1,7 @@
 # 对接 IM 平台（OneBot 11）
 
 Zeronus **不直接连平台**，而是作为「反向 WebSocket 服务端」等 OneBot 实现端连入。
-官方接入端是 `extensions/onebot_adapter/`（默认开启）。
+官方接入端是 `software/extensions/onebot_adapter/`（默认开启）。
 
 ## 一、拓扑
 

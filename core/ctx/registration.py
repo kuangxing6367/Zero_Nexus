@@ -107,7 +107,7 @@ class RegistrationMixin:
         """异步发布事件（推荐 async handler 使用，不阻塞事件循环）"""
         await self._framework.event_bus.aemit(event_name, payload)
 
-    # ---- 扩展点（微内核契约：把行为挂到内核的任意运行环节）----
+    # ---- 扩展点（内核契约：把行为挂到内核的任意运行环节）----
 
     def hook(self, point: str, handler, priority: int = 50):
         """

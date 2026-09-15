@@ -30,7 +30,7 @@ def _local_sources():
 
 
 def test_local_index_has_five_packages():
-    from core.zkg import sources
+    from service.zkg import sources
     reg = sources.SourceRegistry.from_config({"sources": _local_sources()})
     idx = reg.sources[0].fetch_index()
     ids = {p["id"] for p in idx["packages"]}
@@ -42,7 +42,7 @@ def test_local_index_has_five_packages():
 
 
 def test_depdb_skips_undepended_tools():
-    from core.zkg.loader import Loader
+    from service.zkg.loader import Loader
 
     tmp = tempfile.mkdtemp()
     _write_plugin(tmp, "myapp", '["exec", "ws"]')
@@ -64,7 +64,7 @@ def test_depdb_skips_undepended_tools():
 
 
 def test_loaded_tool_api_callable():
-    from core.zkg.loader import Loader
+    from service.zkg.loader import Loader
 
     tmp = tempfile.mkdtemp()
     _write_plugin(tmp, "app2", '["exec", "system"]')

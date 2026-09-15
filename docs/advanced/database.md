@@ -88,7 +88,7 @@ with db.transaction():
     db.execute("UPDATE accounts SET balance = balance + ? WHERE uid = ?", (10, b))
 ```
 
-> 双进程模式下拿不到裸连接（`get_connection()` 不可用），请用 `transaction()` 或 `ctx` 的 db 系列方法。
+> 事务内的多条语句共享同一连接；事务外的单条操作请用 `execute()` / `query()` 或 `ctx` 的 db 系列方法。
 
 ## 六、数据库层的便捷方法
 

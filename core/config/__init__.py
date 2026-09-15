@@ -18,148 +18,135 @@ def _get_logger():
     return logger
 
 
-# 默认配置模板（首次启动自动生成）
+# 默认配置模板（首次启动自动生成；与项目根 config.yaml 三层结构保持一致）
 _DEFAULT_CONFIG = """\
 # ============================================================
-# Zeronus 插件化服务宿主 配置文件
-# 首次启动自动生成，可按需修改后重启
+# ZER NUS 配置文件（三层架构：内核级 / 服务级 / 软件级）
+# 首次启动自动生成，可按需修改后重启。
+# 监听地址默认均为 127.0.0.1（安全默认值）。
 # ============================================================
 
-# ── 数据库配置 ──────────────────────────────────────────────
-# SQLite 模式（默认，零配置开箱即用）
-# MySQL 模式请改为: database: { type: mysql, host: 127.0.0.1, port: 3306, user: root, password: '', database: zernus }
+# ── 内核级（core）：数据库 ───────────────────────────────────
+# 支持 SQLite / MySQL / PostgreSQL 三种；由 type 切换。
 database:
-  type: sqlite
+  type: sqlite                       # sqlite | mysql | postgresql
   path: data/zernus.db
-  # ── MySQL 连接保活/自动重连（type: mysql 时生效） ──
-  # 数据库断开（wait_timeout/服务重启/网络中断）后自动重连，不再卡死
-  # ping_interval: 5        # 连接空闲超过该秒数后自动 ping 检测存活
-  # connect_timeout: 10     # 建立连接超时（秒）
-  # read_timeout: 30        # 读超时（秒），避免断连后无限阻塞
-  # write_timeout: 30       # 写超时（秒）
-  # max_reconnect: 3        # 单次操作最大自动重连次数
+  # MySQL 模式：
+  # type: mysql
+  # host: 127.0.0.1
+  # port: 3306
+  # user: root
+  # password: ""
+  # database: zernus
+  # PostgreSQL 模式（需安装驱动，见 requirements.txt 注释）：
+  # type: postgresql
+  # host: 127.0.0.1
+  # port: 5432
+  # user: postgres
+  # password: ""
+  # database: zernus
 
-# ── OneBot WebSocket 服务端 ─────────────────────────────────
-# OneBot 客户端反向连接此端口（如 NapCat、Lagrange 等）
+# ── 内核级：本地端口 ────────────────────────────────────────
+core:
+  host: 127.0.0.1
+  port: 37001
+
+# ── 内核级：日志 ────────────────────────────────────────────
+log:
+  level: INFO                            # DEBUG / INFO / WARNING / ERROR
+  file: data/logs/zernus.log             # 留空则只输出控制台
+  log_raw_message: true                  # 是否记录收到的原始消息内容
+  log_sent_message: true                 # 是否记录发出的消息内容
+
+# ── 服务级（service）：sys / user 服务端口与看门狗 ──────────
+service:
+  sys:
+    host: 127.0.0.1
+    port: 38001                          # sys 服务监听端口
+  user:
+    host: 127.0.0.1
+    user_port: 38002                     # user 服务监听端口
+  watchdog:
+    max_memory_mb: 256                   # 内存上限（MB），超限告警/回收
+    interval: 30                         # 采样间隔（秒）
+
+# ── 服务级：zkg 包管理 ─────────────────────────────────────
+zkg:
+  local_dir: repo                        # 本地包仓库目录
+  official_source: ""                    # 官方源地址（留空则仅本地）
+
+# ── 软件级（software）：用户插件 ────────────────────────────
+plugin:
+  dir: software/plugins                  # 用户插件根目录（每个插件一个子目录，入口 main.py）
+  dat_dir: data/plugins_dat              # 插件数据/配置目录
+  heartbeat_interval: 60                 # 插件注册心跳间隔（秒）
+  auto_install_deps_on_startup: true     # 启动时自动安装缺失依赖（移机自愈）
+  max_memory_mb: 64                      # 单插件内存上限（MB），连续超限自动卸载
+
+# ── 软件级：官方扩展（software/extensions） ─────────────────
+# 每个扩展可独立开关；本段由启动扫描 software/extensions/ 自动同步 extensions.yaml，
+# 无需手动维护（此处列出仅为直观）。
+extensions:
+  onebot_adapter: true                   # OneBot 11 WebSocket 协议接入
+  webui: true                            # Web 管理后台
+  session: true                          # 会话管理器
+  scheduler: true                        # 定时任务调度器
+  http_api: false                        # HTTP REST API（给外部程序用）
+  http_inject: false                     # HTTP 事件注入接入端
+  image_renderer: true                   # 图像渲染
+
+# ── 软件级：OneBot WebSocket 服务端（扩展 onebot_adapter） ──
 onebot:
+  listen_host: 0.0.0.0
   listen_port: 6830
-  access_token: ""           # 必须设置！留空则不校验 token，任何客户端都能接入
+  access_token: ""                       # 必须设置！留空则不校验 token
 
-# ── Web UI 管理后台 ─────────────────────────────────────────
+# ── 软件级：Web 管理后台（扩展 webui） ─────────────────────
 web:
-  host: 127.0.0.1            # 仅本机访问；需要局域网/公网访问请改为 0.0.0.0（注意安全）
+  host: 127.0.0.1                        # 仅本机访问；局域网/公网请改 0.0.0.0（注意安全）
   port: 8080
-  # secret_key: ""          # 留空则每次重启随机生成，填入后重启保持登录态
-  session_timeout: 3600      # 登录会话超时（秒），同时作为登录 token 的有效期
-  official_sidebar: true     # 是否显示官方默认侧边栏菜单（关闭后仅显示插件注册项与设置）
-  # 自定义左侧栏：order = 官方菜单显示顺序；hidden = 隐藏的官方项（可在「设置 → 侧边栏」调整）
-  # 官方键：dashboard, marketplace, plugins, commands, users, groups, permissions,
-  #         apikeys, tasks, runtime, connection, filebrowser, logs, database
-  sidebar:
+  session_timeout: 3600                  # 登录会话超时（秒）
+  official_sidebar: true                 # 是否显示官方默认侧边栏
+  sidebar:                               # 侧边栏自定义：order=官方菜单顺序，hidden=隐藏项
     order: []
     hidden: []
 
-# ── SSL / TLS（HTTPS / WSS，可选）───────────────────────────
-# 启用后：Web 管理后台走 https、OneBot 反向 WS 走 wss（两者共用同一份证书）。
+# ── 软件级：WebUI 事件推送 WebSocket（可选，默认关） ────────
+ws:
+  enabled: false                         # 开启后 webui 另起 WS 服务推送事件
+  host: 0.0.0.0
+  port: 6840
+  events: []                             # 留空 = 推送全部事件；可填事件名白名单
+
+# ── 软件级：gRPC 接口（可选，默认关；需 grpcio + grpcio-tools） ──
+grpc:
+  enabled: false
+  host: 0.0.0.0
+  port: 50051
+
+# ── 软件级：SSL / TLS（HTTPS / WSS，可选） ──────────────────
+# 启用后：Web 管理后台走 https、OneBot WS 走 wss（两者共用同一份证书）。
 # cert / key 支持绝对路径，或相对项目根目录的路径（如 certs/fullchain.pem）。
 ssl:
   enabled: false
-  cert: ""                   # 证书链文件（fullchain.pem / .crt）
-  key: ""                    # 私钥文件（privkey.pem / .key）
+  cert: ""                               # 证书链文件（fullchain.pem / .crt）
+  key: ""                                # 私钥文件（privkey.pem / .key）
 
-# ── HTTP API（可选，需同时开启 extensions.http_api）────────
-# 给外部程序用的 RESTful 接口，默认监听 1145 端口，token 认证
-# ⚠️ db/query 与 db/execute 是「数据库网关」，可执行任意 SQL（含写库）
-#    默认关闭；确实需要时再设 allow_db: true，且务必给 token 限权
-http_api:
-  # enabled: false           # 与 extensions.http_api 配合；核心插件默认关闭
-  host: 127.0.0.1
-  port: 1145
-  token: ""                  # 留空则每次启动自动生成（打印到日志）
-  allow_db: false            # 是否开放 db/query、db/execute（默认关闭，高危）
-
-# ── HTTP 事件注入接入端（可选，需同时开启 extensions.http_inject）──
-# 外部系统 POST 注入消息/事件，由插件处理；不依赖任何 IM
-http_inject:
-  enabled: false             # 默认关闭，避免意外开端口
-  host: 127.0.0.1
-  port: 8901
-  path: /hook                # POST http://host:port/path
-  token: ""                  # 可选；留空则不校验（建议仅内网使用）
-
-# ── 官方插件开关（extensions/） ─────────────────────────────
-# Zeronus 内置的官方插件，每个都可独立开关（true 加载 / false 禁用）
-# 启动时会自动扫描 extensions/ 目录，把「已安装但下方未列出」的官方插件
-# 自动补进本段（缺省值：onebot_adapter/webui/session/scheduler=true，
-# http_api/http_inject=false），无需手动维护；false 表示禁用。
-# 说明：
-#   - http_api / http_inject 需「此处开启」且「下方对应段自身 enabled」都满足才生效
-#   - 双进程模式下（dual_process.enabled: true），这些插件全部跑在进程1（核心），
-#     进程2（宿主）只加载 plugins/ 下的用户插件
-extensions:
-  onebot_adapter: true       # OneBot 11 WebSocket 协议接入
-  webui: true                # Web 管理后台
-  session: true              # 会话管理器
-  scheduler: true            # 定时任务调度器
-  http_api: false            # HTTP REST API（给外部程序用）
-  http_inject: false         # HTTP 事件注入接入端
-
-# ── 插件配置 ────────────────────────────────────────────────
-plugin:
-  dir: plugins               # 插件代码目录（.py 文件）
-  # dat_dir: data/plugins_dat # 插件数据/配置目录（默认统一存放于 data/plugins_dat）
-  heartbeat_interval: 60     # 插件注册心跳间隔（秒）
-  auto_install_deps_on_startup: true  # 启动时自动安装缺失依赖到全局环境（移机自愈，版本冲突自动跳过）
-  max_memory_mb: 64          # 单插件内存上限（MB），超限自动卸载
-
-# ── 日志配置 ────────────────────────────────────────────────
-log:
-  level: INFO                # DEBUG / INFO / WARNING / ERROR
-  file: data/logs/zernus.log  # 日志文件路径（统一存放于 data/logs/），留空则只输出控制台
-  log_raw_message: true      # 是否记录收到的原始消息内容
-  log_sent_message: true     # 是否记录发送到 OneBot11 的消息内容
-
-# ── GitHub 加速 ─────────────────────────────────────────────
-# 插件市场 / 插件下载 / 框架更新的 GitHub 加速代理地址
-# 留空则使用内置 ghproxy 镜像回退；国内网络直连 GitHub 慢/失败时填写，如 https://ghproxy.net
+# ── 软件级：GitHub 加速（插件市场 / 下载 / 更新） ───────────
+# 留空则用内置 ghproxy 镜像回退；国内直连慢/失败时填写，如 https://ghproxy.net
 github_proxy: ""
 
-# ── 系统配置 ────────────────────────────────────────────────
-system:
-  show_cpu: true             # 仪表盘显示 CPU 使用率
-  show_disk: true            # 仪表盘显示磁盘使用率
-  status_interval: 30        # 系统状态刷新间隔（秒）
-
-# ── 安全配置（双请求防破解认证系统） ─────────────────────────
-# 保护管理后台免受暴力破解与自动化脚本攻击
-# 客户端必须按顺序发送两次请求：先发 fake_token_len 位探针获取 nonce，再发 real_token_len 位 Token + nonce
+# ── 通讯安全（对应启动流程：是否加密通讯） ─────────────────
 security:
-  fake_token_len: 8            # 探针请求的 Token 长度（任意字符串）
-  real_token_len: 8192         # 真实认证的 Token 长度
-  nonce_len: 16                # 下发 nonce 的长度
-  fake_response_msg: "你上钩了！但这里只是蜜罐，请去 GitHub 点个 Star。"
-  nonce_expiry: 60             # nonce 有效期（秒）
-  blacklist_enabled: true      # 是否启用黑名单（持久化到数据库 ip_blacklist 表，重启不清除）
-  whitelist_ips:               # 白名单 IP，跳过所有检查
-    - "127.0.0.1"
-  # success_fake_data:         # 认证通过后返回的迷惑性数据（不填则使用默认假数据）
-  # 内网 IP（127.*、192.168.*、172.16-31.*、10.*）自动豁免蜜罐拉黑，避免误伤本机/局域网
+  encrypted: false                       # 是否启用加密通讯（RSA）；false 走 Token 校验
+  token: ""                              # 非加密模式下的访问 Token（留空 = 不强制校验）
+  rsa_callback: ""                       # 加密模式下 RSA 握手完成后的回调端地址
+  # cors_allowed_origins: []             # Web 后台跨域白名单（留空 = 仅同源）
+  # trusted_proxies: []                  # 反向代理可信 IP（用于取真实客户端 IP）
 
-# ── 双进程架构（可选） ────────────────────────────────────────
-# 一次启动拆成两个进程，用标准库 IPC 通信（零第三方依赖）：
-#   进程1（核心）：Web/WebUI、协议接入（onebot_adapter/http_inject）、真实数据库、IPC 服务端
-#   进程2（宿主）：加载并执行全部用户插件，经 IPC 访问数据库/发消息/注册远程路由/推送日志
-# 默认关闭（单进程，行为完全不变）；开启后可隔离插件故障、降低核心内存占用
-# 其余能力（崩溃自动重启、跨进程事务、日志合并、远程 REST 路由）见架构文档
-dual_process:
-  enabled: false             # 是否启用双进程
-  extensions:              # 核心进程加载的官方插件白名单（缺省由插件 process:'core' 标记自动判定）
-    - onebot_adapter
-    - http_inject
-    - http_api
-    - webui
-  max_restarts: 5           # 宿主崩溃重启限流：窗口内最大重启次数（默认 5）
-  restart_interval: 30      # 限流窗口（秒）（默认 30）
+# ── 项目身份（可自定义名称，不硬编码） ─────────────────────
+project:
+  name: ZER NUS
 """
 
 
@@ -211,7 +198,7 @@ def load_config(config_path: str = None) -> dict:
     # 环境变量替换
     config = _env_replace(config)
 
-    # 官方插件配置中心：自动扫描 extensions/ 同步 extensions.yaml，并合并进 config
+    # 官方插件清单：自动扫描 software/extensions/ 同步 extensions.yaml，并合并进 config
     _autoload_extensions(config)
 
     return config
@@ -229,7 +216,7 @@ def get_config() -> dict:
 _EXTENSION_DEFAULT_DISABLED = ('http_api', 'http_inject')
 
 
-# 官方插件配置中心：独立 yaml，由启动时自动扫描 extensions/ 目录同步
+# 官方插件清单：独立 yaml，由启动时自动扫描 software/extensions/ 目录同步
 EXTENSIONS_YAML = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'extensions.yaml')
 
@@ -250,13 +237,14 @@ _EXTENSION_SCHEMA = {
                  'token': '', 'allow_db': False},
     'http_inject': {'enabled': False, 'host': '127.0.0.1', 'port': 8901,
                     'path': '/hook', 'token': ''},
+    'image_renderer': {'enabled': True},
 }
 
 
 def _scan_extensions() -> list:
     """扫描 extensions/ 目录，返回已安装（含 main.py）的官方插件名列表"""
     plugins_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'extensions')
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'software', 'extensions')
     names = []
     if os.path.isdir(plugins_dir):
         for name in os.listdir(plugins_dir):
@@ -273,7 +261,7 @@ def _default_core_plugin_enabled(name: str) -> bool:
 
 
 def _autoload_extensions(config: dict) -> dict:
-    """官方插件配置中心（extensions.yaml）自动同步 + 合并进主 config。
+    """官方插件清单（extensions.yaml）自动同步 + 合并进主 config。
 
     流程：
       1. 扫描 extensions/ 目录得到已安装官方插件；

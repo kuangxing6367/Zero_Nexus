@@ -6,8 +6,8 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import core.api.graphql as g
-from core.api.graphql import graphql_sync, schema
+import software.extensions.webui.graphql as g
+from software.extensions.webui.graphql import graphql_sync, schema
 
 
 class FakePluginLoader:

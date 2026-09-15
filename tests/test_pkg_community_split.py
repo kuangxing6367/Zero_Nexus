@@ -46,7 +46,7 @@ def _make_local_repo(base, *, with_splits=False, with_glob=False):
 
 
 def test_multi_file_index_via_splits():
-    from core.zkg.sources import Source
+    from service.zkg.sources import Source
     tmp = tempfile.mkdtemp()
     _make_local_repo(tmp, with_splits=True)
     src = Source(id="t", type="local", path=tmp, kind="community")
@@ -58,7 +58,7 @@ def test_multi_file_index_via_splits():
 
 
 def test_multi_file_index_via_local_glob():
-    from core.zkg.sources import Source
+    from service.zkg.sources import Source
     tmp = tempfile.mkdtemp()
     _make_local_repo(tmp, with_glob=True)
     src = Source(id="t", type="local", path=tmp, kind="official")
@@ -68,8 +68,8 @@ def test_multi_file_index_via_local_glob():
 
 
 def test_official_priority_over_community():
-    from core.zkg.sources import Source, SourceRegistry
-    from core.zkg.resolver import Resolver
+    from service.zkg.sources import Source, SourceRegistry
+    from service.zkg.resolver import Resolver
 
     base = tempfile.mkdtemp()
     off = os.path.join(base, "official")
@@ -97,7 +97,7 @@ def test_official_priority_over_community():
 
 
 def test_fetch_package_absolute_url():
-    from core.zkg.sources import Source
+    from service.zkg.sources import Source
 
     tmp = tempfile.mkdtemp()
     # 造一个 tar 包，用 file:// 绝对地址模拟「任意托管位置的下载地址」
@@ -114,6 +114,6 @@ def test_fetch_package_absolute_url():
 
 
 def test_default_sources_are_official():
-    from core.zkg import defaults
+    from service.zkg import defaults
     for s in defaults.get_default_sources():
         assert s["kind"] == "official", s

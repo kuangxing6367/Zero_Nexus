@@ -84,6 +84,17 @@ def _strip_mysql_ddl_syntax(sql: str) -> str:
     # 清理多余的逗号（在 ) 前面）
     sql = re.sub(r',\s*\)', ')', sql)
 
+    # DEFAULT CURRENT_TIMESTAMP → 本地时间。
+    # 1) SQLite 的 CURRENT_TIMESTAMP 返回 UTC，而框架其余写入路径（NOW() 参数替换、
+    #    datetime.now()）均为本地时间；不统一会让 created_at 与 last_login_at 相差一个时区偏移。
+    # 2) 本函数会被重复调用（init_db 翻译一次、engine.execute 再翻译一次），
+    #    且上面的 DATETIME→TEXT 替换大小写不敏感，故这里必须用不含 "datetime" 的
+    #    strftime 形式，保证幂等；否则第二趟会把 datetime(...) 改成 TEXT(...)。
+    sql = re.sub(
+        r'\bDEFAULT\s+CURRENT_TIMESTAMP(?:\(\))?',
+        "DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime'))",
+        sql, flags=re.IGNORECASE)
+
     # 清理多余空格
     sql = re.sub(r'\s+', ' ', sql).strip()
 

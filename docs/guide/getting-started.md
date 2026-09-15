@@ -9,15 +9,17 @@ python main.py
 启动后会打印结构化横幅，确认这几项即可：
 
 ```
- Zeronus v0.0.1-beta.0-alpha.0
- 进程模式: 单进程 (standard)
+============================================================
+ ZER NUS v0.0.1-alpha.0
+============================================================
  数据目录 : <项目>/data
  数据库   : SQLite → data/zernus.db
- 官方插件 : 5 个 → image_renderer, onebot_adapter, scheduler, session, webui
+ 官方扩展 : 5 个 → image_renderer, onebot_adapter, scheduler, session, webui
  用户插件 : 0 个 → (无)
  监听端口 :
    - OneBot WS : 0.0.0.0:6830
    - WebUI      : http://127.0.0.1:8080
+============================================================
 ```
 
 > 首次启动会自动生成 `config.yaml`、建表（`data/zernus.db`），并在缺依赖时自动补齐。
@@ -58,10 +60,10 @@ curl -X POST http://127.0.0.1:8901/hook \
 
 ## 四、装一个插件
 
-用户插件放在 `plugins/<名字>/`，入口 `main.py`：
+用户插件放在 `software/plugins/<名字>/`，入口 `main.py`：
 
 ```python
-# plugins/greeter/main.py
+# software/plugins/greeter/main.py
 def register(ctx):
     ctx.command("/hello", on_hello, description="打个招呼")
 

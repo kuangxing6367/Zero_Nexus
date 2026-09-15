@@ -23,27 +23,20 @@ class ApiMixin:
         这是把 Zeronus 当通用服务宿主的关键接入点：外部系统/页面可通过 HTTP 与插件交互，
         而不必自己开 HTTP 服务、自己写鉴权。
         """
-        from core.api import registry as _api_registry
+        # Web API 注册表由 webui 扩展在启动时注入到 fw.api_registry；
+        # 内核只持中立缓冲，不直接依赖 Web 包（保持层倒置为 0）。
         if methods is None:
             methods = ['GET']
         methods = [m.upper() for m in methods]
 
-        # 双进程宿主模式：Web 在核心进程，走远程路由（handler 契约 fn(params)->dict/(status,dict)）
-        rr = getattr(self._framework, '_remote_routes', None)
-        if rr is not None:
-            try:
-                rr.register_route(path, methods, handler, auth)
-            except Exception as e:
-                self.log(f"远程 API 路由注册失败 {path} {methods}: {e}")
-                return False
-            if description:
-                self.log(f"已注册远程 API 路由 {path} {methods}" + (f" ({description})" if description else ""))
-            else:
-                self.log(f"已注册远程 API 路由 {path} {methods}")
-            return True
-
-        route = _api_registry.register_route(path, methods, handler, auth)
-        ok = route is not None
+        reg = getattr(self._framework, 'api_registry', None)
+        if reg is not None:
+            route = reg.register_route(path, methods, handler, auth)
+            ok = route is not None
+        else:
+            # Web 尚未启用：缓冲，等 webui 扩展启动后统一挂载
+            self._framework._pending_api_routes.append((path, methods, handler, auth))
+            ok = False
         if ok and description:
             self.log(f"已注册 API 路由 {path} {methods}" + (f" ({description})" if description else ""))
         elif not ok:

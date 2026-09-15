@@ -12,7 +12,7 @@ from .command import terminal_commands
 def _installed_extensions() -> set:
     """扫描 extensions/ 目录得到已安装官方插件名（替代硬编码名单）"""
     plugins_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'extensions')
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'software', 'extensions')
     try:
         return {
             n for n in os.listdir(plugins_dir)
@@ -32,9 +32,12 @@ def register_builtins(fw):
     def cmd_status(args):
         """查看框架状态"""
         try:
-            import psutil
-            proc = psutil.Process()
-            mem = proc.memory_info().rss / 1024 / 1024
+            try:
+                import psutil
+                proc = psutil.Process()
+                mem = proc.memory_info().rss / 1024 / 1024
+            except ImportError:
+                mem = None
             uptime = fw._format_uptime() if hasattr(fw, '_format_uptime') else "N/A"
 
             bots = []
@@ -58,7 +61,7 @@ def register_builtins(fw):
             print("=" * 50)
             print(f"  版本: {open('VERSION').read().strip() if os.path.exists('VERSION') else '未知'}")
             print(f"  运行时间: {uptime}")
-            print(f"  进程内存: {mem:.1f} MB")
+            print(f"  进程内存: {mem:.1f} MB" if mem is not None else "  进程内存: N/A（未安装 psutil）")
             print(f"  已连接客户端: {len(bots)} 个")
             if bots:
                 for b in bots:
@@ -511,9 +514,9 @@ def register_builtins(fw):
             print(f"定时任务 ({len(jobs)} 个):")
             print("-" * 60)
             for job in jobs:
-                print(f"  {job.id}")
-                print(f"    下次运行: {job.next_run_time}")
-                print(f"    触发器: {job.trigger}")
+                print(f"  {job['id']}")
+                print(f"    下次运行: {job.get('next_run')}")
+                print(f"    触发器: {job.get('trigger')}")
             print("-" * 60)
         except Exception as e:
             print(f"查询失败: {e}")
@@ -556,7 +559,11 @@ def register_builtins(fw):
 
     def cmd_update(args):
         """更新框架: update [版本号]"""
-        import requests, zipfile, tempfile, shutil
+        import json
+        import urllib.request
+        import zipfile
+        import tempfile
+        import shutil
         repo = 'kuangxing6367/Zero_Nexus'
         branch = 'main'
         target = args.strip() or ''
@@ -575,8 +582,11 @@ def register_builtins(fw):
         else:
             # 取最新 Release
             try:
-                r = requests.get(f"https://api.github.com/repos/{repo}/releases?per_page=5", timeout=15)
-                releases = r.json() if r.status_code == 200 else []
+                req = urllib.request.Request(
+                    f"https://api.github.com/repos/{repo}/releases?per_page=5",
+                    headers={'User-Agent': 'zernus-update'})
+                r = urllib.request.urlopen(req, timeout=15)
+                releases = json.loads(r.read().decode('utf-8')) if r.status == 200 else []
                 best = None
                 for rel in releases:
                     t = rel.get('tag_name', '')
@@ -597,9 +607,9 @@ def register_builtins(fw):
 
         # 下载
         try:
-            resp = requests.get(zip_url, timeout=60)
-            if resp.status_code != 200:
-                print(f"下载失败: HTTP {resp.status_code}")
+            resp = urllib.request.urlopen(zip_url, timeout=60)
+            if resp.status != 200:
+                print(f"下载失败: HTTP {resp.status}")
                 return
         except Exception as e:
             print(f"下载失败: {e}")
@@ -609,7 +619,7 @@ def register_builtins(fw):
         tmp_zip = tempfile.mktemp(suffix='.zip')
         try:
             with open(tmp_zip, 'wb') as f:
-                f.write(resp.content)
+                f.write(resp.read())
             tmp_dir = tempfile.mkdtemp(prefix='zernus_upd_')
             try:
                 with zipfile.ZipFile(tmp_zip, 'r') as zf:
@@ -648,21 +658,21 @@ def register_builtins(fw):
 
     # 注册内置命令
     terminal_commands.register("help", cmd_help, "显示帮助", ["h", "?"])
-    terminal_commands.register("status", cmd_status, "查看框架状态", ["st"], target="both")
-    terminal_commands.register("plugins", cmd_plugins, "列出已加载插件", ["pl"], target="both")
-    terminal_commands.register("enable", cmd_enable, "启用插件: enable <插件名>", target="host")
-    terminal_commands.register("disable", cmd_disable, "禁用插件: disable <插件名>", target="host")
+    terminal_commands.register("status", cmd_status, "查看框架状态", ["st"])
+    terminal_commands.register("plugins", cmd_plugins, "列出已加载插件", ["pl"])
+    terminal_commands.register("enable", cmd_enable, "启用插件: enable <插件名>")
+    terminal_commands.register("disable", cmd_disable, "禁用插件: disable <插件名>")
     terminal_commands.register("config", cmd_config, "查看/修改配置: config [key] [value]")
     terminal_commands.register("send", cmd_send, "发送消息: send <user_id> <消息>")
     terminal_commands.register("recv", cmd_recv, "模拟接收消息: recv <user_id> <消息>")
-    terminal_commands.register("reload", cmd_reload, "重载插件: reload [插件名]", target="host")
+    terminal_commands.register("reload", cmd_reload, "重载插件: reload [插件名]")
     terminal_commands.register("users", cmd_users, "查看用户列表")
     terminal_commands.register("groups", cmd_groups, "查看群列表")
     terminal_commands.register("ban", cmd_ban, "禁言/封禁: ban <user_id> [分钟]")
     terminal_commands.register("unban", cmd_unban, "解封/解禁: unban <user_id>")
     terminal_commands.register("kick", cmd_kick, "踢出群成员: kick <group_id> <user_id>")
     terminal_commands.register("broadcast", cmd_broadcast, "广播消息: broadcast <消息>")
-    terminal_commands.register("tasks", cmd_tasks, "查看定时任务", target="host")
+    terminal_commands.register("tasks", cmd_tasks, "查看定时任务")
     terminal_commands.register("log", cmd_log, "查看日志: log [行数]")
     terminal_commands.register("clear", cmd_clear, "清屏", ["cls"])
     terminal_commands.register("exit", cmd_exit, "退出框架", ["quit", "q"])

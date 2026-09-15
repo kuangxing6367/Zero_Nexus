@@ -1,7 +1,8 @@
 """
 插件加载器核心实现（core.plugin_loader）
 
-原 framework/loader.py（巨石，约 2176 行单类）已按职责拆解为以下细模块：
+原巨型 loader.py（约 2176 行单类，拆分前位于 framework/，该目录已并入 core/）
+已按职责拆解为以下细模块：
 
   - pip.py           pip 镜像安装 + 版本说明符解析（模块级工具函数）
   - source_loader.py 插件源码加载器（始终从 .py 现场编译，不写 __pycache__）
@@ -16,10 +17,10 @@
   - group.py         群级插件开关
 
 PluginLoader 由上述 mixin 线性组合而成，对外 API（方法名、签名、行为）
-与拆分前完全一致；framework/loader.py 仅做透明重导出，50+ 引用方零改动。
+与拆分前完全一致；下面对外暴露的即为原类，引用方零改动。
 
-注：core/loader.py（文件，Loader 类）是包管理器依赖驱动加载器，与本包职责不同，
-故插件加载器落在 core.plugin_loader 包以避名冲突。
+注：service/zkg/loader.py（Loader 类，服务级包管理器）是依赖驱动的加载器，
+与本包职责不同，故插件加载器落在 core.plugin_loader 包以避名冲突。
 """
 from .base import PluginLoaderBase
 from .dependency import DependencyMixin

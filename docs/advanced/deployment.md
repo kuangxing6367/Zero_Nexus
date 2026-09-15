@@ -100,7 +100,7 @@ server {
 配置要点：
 
 - `config.yaml` 里 `web.host` 保持 `127.0.0.1`（只让反代访问）；
-- `security.whitelist_ips` 加上反代所在网段，避免蜜罐误伤；
+- `security.trusted_proxies` 填上反代所在 IP，使框架能取到真实客户端 IP；
 - 若不用反代、要框架自己上 HTTPS，则配 `ssl.enabled: true` + 证书路径。
 
 ## 五、端口清单
@@ -111,6 +111,7 @@ server {
 | 6830 | OneBot 反向 WS | 对协议端可达 |
 | 1145 | 独立 HTTP API（默认关） | 仅内网 |
 | 8901 | HTTP 事件注入（默认关） | 仅内网 |
+| 37001 / 38001 / 38002 | 内核 / sys 服务 / user 服务本地端口 | **仅本机**（默认绑 127.0.0.1，不要对外暴露） |
 
 ## 六、安全清单
 
@@ -120,7 +121,7 @@ server {
 - [ ] `http_api` / `http_inject` 非必要不开；开了必须设 token；
 - [ ] `http_api.allow_db` 保持 `false`（它允许任意 SQL）；
 - [ ] 密钥用环境变量：`${VAR}` / `${VAR:-default}`；
-- [ ] `security.whitelist_ips` 按实际网络调整；
+- [ ] `security.trusted_proxies` 按实际反代网络调整；
 - [ ] 定期看后台「日志」页的异常与审计记录。
 
 ## 七、升级
@@ -133,7 +134,7 @@ sudo systemctl restart zeronus
 ```
 
 - 系统表在启动时自动迁移，无需手动改表；
-- `plugins/`、`data/`、`config.yaml`、`extensions.yaml` 都是本地内容，升级不覆盖；
+- `software/plugins/`、`data/`、`config.yaml`、`extensions.yaml` 都是本地内容，升级不覆盖；
 - 关注 [CHANGELOG](https://github.com/kuangxing6367/Zero_Nexus/blob/main/CHANGELOG.md) 的破坏性变更说明。
 
 ## 八、常见问题
@@ -148,4 +149,4 @@ sudo systemctl restart zeronus
 
 ---
 
-延伸：[配置系统](../guide/configuration.md) · [双核心（实验）](./dual-core.md)
+延伸：[配置系统](../guide/configuration.md) · [架构总览](./architecture.md)

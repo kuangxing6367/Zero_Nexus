@@ -22,7 +22,7 @@ await framework.stop()                 # 停止：触发 lifecycle.shutdown，�
 | ---- | ---- | ---- |
 | `fw.config` | `dict` | 合并后的配置（`config.yaml` + `extensions.yaml`） |
 | `fw.config_path` | `str` | 配置文件的绝对路径 |
-| `fw.db` | `Database` | 数据库抽象（双进程下为远程代理） |
+| `fw.db` | `Database` | 数据库抽象（查询 / 执行 / 事务，方言见[数据库](../../advanced/database.md)） |
 | `fw.services` | `ServiceRegistry` | 服务注册表（见[服务注册表](./services.md)） |
 | `fw.hooks` | `HookRegistry` | 扩展点注册表（见[扩展点](../advanced/hooks.md)） |
 | `fw.event_bus` | `EventBus` | 事件总线（`on` / `once` / `off` / `emit` / `aemit` / `await_event`） |
@@ -60,7 +60,7 @@ Framework()                     装配：配置 → 日志 → 数据库 → 服
   └─ await start()
        1. 建表 / 迁移
        2. 扫描并加载官方扩展（按 extensions.yaml 与依赖）
-       3. 加载用户插件（plugins/）→ 执行 register(ctx)，收集命令/任务/扩展点
+       3. 加载用户插件（software/plugins/）→ 执行 register(ctx)，收集命令/任务/扩展点
        4. 启动服务：接入端 → 调度器 → Web → （可选）WS 事件推送 / gRPC
        5. 触发 lifecycle.startup
        6. 打印启动横幅，进入运行

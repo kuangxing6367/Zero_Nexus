@@ -5,7 +5,7 @@ import { defineConfig } from 'vitepress'
 // 若改回项目页托管（https://kuangxing6367.github.io/Zero_Nexus/），把 base 改成 '/Zero_Nexus/'
 export default defineConfig({
   title: 'Zeronus',
-  description: '微内核式事件驱动服务宿主',
+  description: '分层（内核 / 服务 / 软件）事件驱动服务宿主',
   lang: 'zh-CN',
   base: '/',
   cleanUrls: true,
@@ -79,8 +79,7 @@ export default defineConfig({
             { text: '数据库', link: '/advanced/database' },
             { text: '权限系统', link: '/advanced/permission' },
             { text: '定时任务', link: '/advanced/scheduler' },
-            { text: '部署上线', link: '/advanced/deployment' },
-            { text: '双核心（实验）', link: '/advanced/dual-core' }
+            { text: '部署上线', link: '/advanced/deployment' }
           ]
         }
       ]
