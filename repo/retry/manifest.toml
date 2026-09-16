@@ -1,0 +1,9 @@
+[package]
+id = "retry"
+name = "Retry"
+type = "tool"
+version = "1.0.0"
+description = "通用重试/指数退避（函数与装饰器两用，支持异常白名单与抖动），网络与外部服务调用的标配"
+dependencies = []
+provides = ["retry"]
+entry = "main.py"

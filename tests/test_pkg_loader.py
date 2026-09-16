@@ -29,12 +29,13 @@ def _local_sources():
     }]
 
 
-def test_local_index_has_five_packages():
+def test_local_index_has_nine_packages():
     from service.zkg import sources
     reg = sources.SourceRegistry.from_config({"sources": _local_sources()})
     idx = reg.sources[0].fetch_index()
     ids = {p["id"] for p in idx["packages"]}
-    assert ids == {"exec", "ws", "udp", "store", "system"}
+    assert ids == {"exec", "ws", "udp", "store", "system",
+                   "http", "retry", "lock", "validate"}
     # 每个条目都带 url + sha256（索引完整性）
     for p in idx["packages"]:
         assert p["url"].startswith("pool/")
@@ -51,9 +52,9 @@ def test_depdb_skips_undepended_tools():
     out = ld.run()
     stats = out["stats"]
 
-    assert stats["tools_total"] == 5
+    assert stats["tools_total"] == 9
     assert stats["tools_loaded"] == 2       # exec, ws
-    assert stats["tools_skipped"] == 3      # udp, store, system
+    assert stats["tools_skipped"] == 7      # 其余未被依赖不加载
     assert out["loaded_tools"] == ["exec", "ws"]
 
     # 依赖方记录（剪枝依据）

@@ -24,6 +24,11 @@
 - 稳定 ABI 承诺落地：`core/ctx.PLUGIN_API_VERSION`（当前 1）+ `ctx.api_version`；
   插件 manifest 可声明 `api_version` 兼容区间（如 `"1"` / `">=1,<2"`），
   zkg 加载器启动校验并告警不兼容插件（`api_incompatible`）。
+- 机制包工具箱 5→9：新增 `http`（HTTP 客户端，回环自动绕代理、结果对象不抛异常）、
+  `retry`（指数退避重试）、`lock`（命名锁 + 跨进程文件锁，同路径可重入）、
+  `validate`（声明式参数校验与清洗），全部纯标准库。
+- 新增测试 `tests/test_zkg_tools.py`（5 项：本地 HTTP 往返 / 重试语义 /
+  锁互斥与重入 / 校验清洗 / 全链路加载）。
 
 ---
 

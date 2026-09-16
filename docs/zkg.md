@@ -42,6 +42,23 @@ zkg:
   official_source: ""          # 官方源地址（默认不主动连接；留空则仅本地）
 ```
 
+## 内置机制包（repo/）
+
+| id | 作用 |
+| --- | --- |
+| `store` | JSON KV 存储（原子写、统一路径） |
+| `exec` | 通用命令执行（subprocess 封装，返回 ExecResult） |
+| `system` | 系统自述（运行环境与能力探测） |
+| `udp` | UDP 传输（open/send/recv） |
+| `ws` | WebSocket 传输（serve/connect） |
+| `http` | HTTP 客户端（urllib 封装：JSON/超时/大小上限，回环地址自动绕代理，结果对象不抛异常） |
+| `retry` | 重试/指数退避（函数与装饰器两用，异常白名单 + 抖动） |
+| `lock` | 互斥锁（进程内命名锁单例 + 跨进程文件锁，同路径可重入） |
+| `validate` | 声明式参数校验（类型收敛/必填/范围/枚举/默认值，返回清洗数据） |
+
+均为**纯标准库实现，零第三方依赖**；在 `repo/<id>/main.py` 的模块文档串里
+维护各自「稳定 API 表面」。插件用 `ctx.zkg_tool("<id>")` 取用。
+
 ## 插件脚手架
 
 ```bash

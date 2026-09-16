@@ -1,0 +1,9 @@
+[package]
+id = "validate"
+name = "Validate"
+type = "tool"
+version = "1.0.0"
+description = "声明式参数校验（类型/必填/范围/枚举/默认值，一次 check 返回清洗数据），插件入口参数不再各自 if 手查"
+dependencies = []
+provides = ["validate"]
+entry = "main.py"

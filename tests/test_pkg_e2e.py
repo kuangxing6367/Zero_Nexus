@@ -137,8 +137,10 @@ def test_production_wiring_real_repo():
     ids = {m.id for m in __import__("service.zkg.scanner", fromlist=["scan_dir"])
            .scan_dir(os.path.join(ROOT, "software", "plugins"))}
     assert "demo_kv" in ids
-    # 主根 5 个工具包 + 插件根所有插件（含 demo_kv）
-    assert out["plugin_count"] == 5 + len(ids)
+    # 主根（repo/ 全部工具包）+ 插件根全部插件
+    n_tools = len(__import__("service.zkg.scanner", fromlist=["scan_dir"])
+                  .scan_dir(os.path.join(ROOT, "repo")))
+    assert out["plugin_count"] == n_tools + len(ids)
     # demo_kv 依赖 store → store 被按需加载并暴露
     assert "store" in out["loaded_tools"]
     assert callable(ld.loaded_tools()["store"].KV)
