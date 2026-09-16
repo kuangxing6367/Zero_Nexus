@@ -24,6 +24,7 @@ def register(ctx):
 | 一次性事件 | `ctx.once(event, handler)` | 只触发一次 |
 | 发出事件 | `ctx.emit(event, payload)` | 延迟投递到主事件循环 |
 | 命令 | `ctx.command(pattern, handler, priority=50, require_level="")` | 正则匹配命令；`require_level` 可为 `admin` / `super` |
+| 机制包 | `ctx.zkg_tool("<id>")` | 取用 zkg 按需加载的官方机制包（如 `store`）；需在插件 `manifest.toml` 的 `dependencies` 里声明 |
 | 定时任务 | `ctx.task(cron_expr, executor, description="")` | 注册 cron 任务 |
 | 读取配置 | `ctx.get_config(key, default=None)` | 读取插件配置（来自 `plugin_configs` 表） |
 | 发消息 | `ctx.send_msg(user_id=..., group_id=..., message=...)` | 发送消息 |

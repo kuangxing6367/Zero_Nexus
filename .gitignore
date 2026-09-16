@@ -18,10 +18,11 @@ software/extensions/webui/frontend/vite.config.js.timestamp-*
 
 # ============================================================
 # 软件级：用户插件（software/plugins）
-# 仅保留包骨架 __init__.py，用户自建插件不进仓库
+# 仅保留包骨架 __init__.py 与官方演示插件，用户自建插件不进仓库
 # ============================================================
 software/plugins/*
 !software/plugins/__init__.py
+!software/plugins/demo_kv/
 
 # 软件级：官方扩展的原生构建产物（Rust/C 扩展编译输出）
 software/extensions/*/native/target/

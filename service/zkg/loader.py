@@ -10,18 +10,34 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import tarfile
 from typing import List, Optional
 
 from . import defaults, scanner, resolver, depdb, sources
 
+logger = logging.getLogger('zernus.zkg')
+
 
 class Loader:
     def __init__(self, plugins_dir: str, data_dir: str,
-                 sources_cfg: Optional[list] = None):
+                 sources_cfg: Optional[list] = None,
+                 scan_roots: Optional[List[str]] = None,
+                 plugin_api_version: Optional[int] = None):
+        """
+        :param plugins_dir: 主扫描根（生产为 repo/，含官方工具包）
+        :param scan_roots:  额外扫描根列表（如 software/plugins/，用户插件在
+                            manifest.toml 的 dependencies 里声明所需工具）；
+                            为 None 时仅扫描 plugins_dir（兼容旧行为）。
+                            同 id 的包以先扫到的为准（主扫描根优先）。
+        :param plugin_api_version: 当前框架插件 API 版本（core.ctx.PLUGIN_API_VERSION）；
+                            提供后对声明了 api_version 的插件清单做兼容校验并记录结果。
+        """
         self.plugins_dir = plugins_dir
+        self.scan_roots = scan_roots
         self.data_dir = data_dir
+        self._api = plugin_api_version
         cfg = {"sources": sources_cfg} if sources_cfg else \
               {"sources": defaults.get_default_sources()}
         self.registry = sources.SourceRegistry.from_config(cfg)
@@ -30,7 +46,26 @@ class Loader:
         self._loaded: dict = {}
 
     def run(self) -> dict:
-        plugin_manifests = scanner.scan_dir(self.plugins_dir)
+        roots = [self.plugins_dir] + list(self.scan_roots or [])
+        plugin_manifests: List = []
+        seen: set = set()
+        for root in roots:
+            for m in scanner.scan_dir(root):
+                if m.id in seen:      # 主扫描根优先，同 id 去重
+                    continue
+                seen.add(m.id)
+                plugin_manifests.append(m)
+        # 插件 API 兼容校验（声明了 api_version 且不兼容的，记录并告警）
+        api_incompatible: List[str] = []
+        if self._api is not None:
+            for m in plugin_manifests:
+                if not m.api_version_ok(self._api):
+                    api_incompatible.append(m.id)
+                    logger.warning(
+                        f"[loader] 插件 {m.id} 声明 api_version={m.api_version!r}，"
+                        f"与当前插件 API 版本 {self._api} 不兼容，"
+                        f"可能运行异常（请升级插件或调整声明）"
+                    )
         res = self.resolver.resolve(plugin_manifests)
         stats = self.depdb.rebuild(plugin_manifests, res)
         for tid in res.needed:
@@ -40,6 +75,7 @@ class Loader:
             "stats": stats,
             "plugin_count": len(plugin_manifests),
             "loaded_tools": sorted(self._loaded.keys()),
+            "api_incompatible": api_incompatible,
         }
 
     def _load_tool(self, tid: str, v: dict):
@@ -63,6 +99,16 @@ class Loader:
             print(f"[loader] 找不到提供 {tid} 的源，跳过")
             return None
         local_file = src.fetch_package(mani.get("url", f"{tid}.tar.gz"), cache_dir)
+        # 完整性校验：索引声明的 sha256 必须与落盘包体一致，否则拒绝加载
+        expected = str(mani.get("sha256") or "").strip().lower()
+        if expected:
+            actual = self._sha256_file(local_file)
+            if actual != expected:
+                logger.error(
+                    f"[loader] 包 {tid} sha256 校验失败（期望 {expected[:16]}…，"
+                    f"实际 {actual[:16]}…），已拒绝加载。包体可能被篡改或损坏。"
+                )
+                return None
         extract = os.path.join(cache_dir, "extracted")
         os.makedirs(extract, exist_ok=True)
         with tarfile.open(local_file) as tf:
@@ -72,6 +118,15 @@ class Loader:
                 return self._import_file(f"{tid}_tool",
                                           os.path.join(root, entry))
         return None
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        import hashlib
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
 
     @staticmethod
     def _import_file(modname: str, path: str):

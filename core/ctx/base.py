@@ -60,6 +60,12 @@ class PluginContextBase:
         return self._plugin_name
 
     @property
+    def api_version(self) -> int:
+        """插件 API 版本（稳定 ABI 承诺；见 core/ctx.PLUGIN_API_VERSION）"""
+        from core.ctx import PLUGIN_API_VERSION
+        return PLUGIN_API_VERSION
+
+    @property
     def command_bus(self):
         """内核命令总线（薄分发原语 register/invoke），供插件直接注册运行时命令。
 
@@ -68,6 +74,15 @@ class PluginContextBase:
         - ``command_bus`` 是内核级 name→callable 运行时分发原语，不含任何路由/匹配策略。
         """
         return self._framework.command_bus
+
+    def zkg_tool(self, name: str):
+        """获取 zkg 按需加载的官方机制包模块（service/zkg），未加载返回 None。
+
+        机制包由 zkg 依据插件 manifest.toml 的 ``dependencies`` 声明按需加载
+        （如 ``store`` / ``exec`` / ``ws``），启动后在框架实例上统一暴露。
+        在 manifest 声明依赖 + 这里取用，是插件消费机制包的标准路径。
+        """
+        return getattr(self._framework, 'zkg_tools', {}).get(name)
 
     @property
     def _current_bot(self):

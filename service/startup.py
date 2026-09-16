@@ -82,15 +82,24 @@ async def start_sys_service(fw, config: dict):
     host = svc.get('host', '127.0.0.1')
     port = int(svc.get('port', 38001))
 
-    # zkg 包管理：scan(本地仓库) → resolve(依赖图) → 重建 data/plugins.db → 加载被依赖工具
+    # zkg 包管理：scan(本地仓库 + 用户插件) → resolve(依赖图) → 重建 data/plugins.db
+    #            → 加载被依赖工具。用户插件在 software/plugins/<pkg>/manifest.toml
+    #            的 dependencies 里声明所需官方工具，zkg 据此决定加载哪些。
     try:
         from service.zkg.loader import Loader
+        from core.ctx import PLUGIN_API_VERSION
         root = (fw.config.get('zkg') or {}).get('local_dir', 'repo')
         if not os.path.isabs(root):
             root = os.path.join(project_root(), root)
+        plugin_root = os.path.join(project_root(), 'software', 'plugins')
         data_dir = os.path.join(project_root(), 'data')
-        loader = Loader(root, data_dir, sources_cfg=_zkg_sources(fw.config))
+        loader = Loader(root, data_dir,
+                        sources_cfg=_zkg_sources(fw.config),
+                        scan_roots=[plugin_root],
+                        plugin_api_version=PLUGIN_API_VERSION)
         result = loader.run()
+        # 机制包统一暴露：插件经 ctx.zkg_tool(name) 取用
+        fw.zkg_tools = loader.loaded_tools()
         tools = result.get('loaded_tools') or []
         logger.info(
             f"[sys] zkg 包管理就绪：仓库 {result.get('plugin_count', 0)} 个包，"

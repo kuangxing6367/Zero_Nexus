@@ -9,7 +9,21 @@
 
 ## 开发中
 
-_暂无。_
+### zkg 包管理
+
+- 依赖解析接入用户插件：`software/plugins/<pkg>/manifest.toml` 的 `dependencies`
+  现在会被 zkg 解析，据此按需加载官方机制包（此前生产路径只扫 `repo/`，接线断裂）。
+- 加载器新增 `scan_roots` 参数支持多扫描根，同 id 以主扫描根优先。
+- 包完整性校验落地：从源拉取包体后先校验索引声明的 sha256，不一致即拒绝加载。
+- 新增端到端测试 `tests/test_pkg_e2e.py`（下载路径加载 / 多扫描根合并 / 哈希篡改拒绝）。
+- 机制包暴露给插件：`fw.zkg_tools`（startup 填充）+ `ctx.zkg_tool(name)` 访问器，
+  插件消费机制包有了标准路径（此前工具加载后无任何途径触达）。
+- 新增 `zkg new` 插件脚手架（`python -m service.zkg new <name> [--deps ...]`），
+  生成 manifest.toml / main.py / requirements.txt 骨架。
+- 新增演示插件 `software/plugins/demo_kv/`：声明 `store` 依赖并消费 KV 的最小完整样例。
+- 稳定 ABI 承诺落地：`core/ctx.PLUGIN_API_VERSION`（当前 1）+ `ctx.api_version`；
+  插件 manifest 可声明 `api_version` 兼容区间（如 `"1"` / `">=1,<2"`），
+  zkg 加载器启动校验并告警不兼容插件（`api_incompatible`）。
 
 ---
 

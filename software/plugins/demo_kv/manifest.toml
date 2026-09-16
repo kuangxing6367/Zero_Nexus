@@ -1,0 +1,10 @@
+# zkg 包清单：dependencies 声明所需官方机制包（id 见 repo/ 或官方源索引），
+# zkg 启动时解析并按需加载，插件内经 ctx.zkg_tool("<id>") 取用。
+[package]
+id = "demo_kv"
+name = "demo_kv"
+type = "plugin"
+version = "0.1.0"
+description = "演示插件：声明 store 机制包依赖并消费 KV 的最小完整样例"
+dependencies = ["store"]
+api_version = "1"

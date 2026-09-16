@@ -25,4 +25,10 @@ framework/ctx.py 仅做 `from core.ctx.context import PluginContext` 兼容重�
 from .context import PluginContext
 from .logger import PluginLogger, _async_executor
 
-__all__ = ['PluginContext', 'PluginLogger', '_async_executor']
+# 插件 API 版本（稳定 ABI 承诺，设计总纲第 4 条）。
+# 语义：破坏性变更（删方法 / 改签名 / 改行为）→ 主版本 +1；
+#       向后兼容的新增 → 保持主版本不变。插件在 manifest.toml 的
+#       api_version 字段声明兼容区间（如 "1" 或 ">=1,<2"），zkg 加载器校验。
+PLUGIN_API_VERSION = 1
+
+__all__ = ['PluginContext', 'PluginLogger', '_async_executor', 'PLUGIN_API_VERSION']
