@@ -13,13 +13,8 @@ build/
 software/extensions/webui/frontend/vite.config.js.timestamp-*
 
 # ============================================================
-# 文档站（VitePress）
+# 文档（docs/ 为扁平纯 Markdown，无构建产物；依赖目录由全局 node_modules/ 忽略）
 # ============================================================
-docs/node_modules/
-docs/.npm-cache/
-docs/.vitepress/dist/
-docs/.vitepress/cache/
-docs/.vitepress/.temp/
 
 # ============================================================
 # 软件级：用户插件（software/plugins）
