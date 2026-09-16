@@ -125,8 +125,9 @@ main.py → 启动 core → 监听一个本地端口
 | type | 说明 |
 | --- | --- |
 | `sqlite` | 默认，零配置开箱即用（`data/zernus.db`） |
-| `mysql` | 需 `pymysql`（框架按需自动安装） |
-| `postgresql` | 需 `psycopg2`（框架按需自动安装） |
+| `mysql` | 需先 `pip install pymysql DBUtils`（缺失时启动报错并提示，内核不在请求路径静默装包） |
+
+> PostgreSQL：仅保留 SQL 方言翻译层，数据库连接与驱动接入尚未实现（`type: postgresql` 会回退 SQLite 行为），请勿在生产使用。
 
 SQLite 与 MySQL 的查询 API 一致（`query` / `query_one` / `execute` / `insert` / `scalar` / `count` / `exists` 等），返回均为 `list[dict]`。
 
@@ -177,6 +178,7 @@ SQLite 与 MySQL 的查询 API 一致（`query` / `query_one` / `execute` / `ins
 
 | 主题 | 文件 |
 | --- | --- |
+| 路线图 | [roadmap](docs/roadmap.md) |
 | 总览与导航 | [docs/index.md](docs/index.md) |
 | 安装 | [docs/installation.md](docs/installation.md) |
 | 开始使用 | [docs/getting-started.md](docs/getting-started.md) |

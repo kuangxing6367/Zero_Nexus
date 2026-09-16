@@ -9,8 +9,8 @@ Zeronus 在 `core/` 提供**三方言**数据库抽象，对上层屏蔽差异�
 | type | 说明 | 额外依赖 |
 | --- | --- | --- |
 | `sqlite` | 默认，零配置，文件 `data/zernus.db` | 无 |
-| `mysql` | 需手动建库 | `pymysql`（框架按需自动安装） |
-| `postgresql` | 需手动建库 | `psycopg2`（框架按需自动安装） |
+| `mysql` | 需手动建库 | `pymysql` + `DBUtils`（需先 `pip install pymysql DBUtils`，缺失时启动报错并提示，内核不在请求路径静默装包） |
+| `postgresql` | **连接未实现**（仅保留 SQL 方言翻译，`type: postgresql` 回退 SQLite 行为），请勿在生产使用 | - |
 
 ## 方言翻译层（`core/storage/dialect.py`）
 
@@ -31,12 +31,12 @@ SQLite 与 MySQL 返回均为 `list[dict]`。常用接口：
 | --- | --- |
 | `query(sql, params)` | 批量查询（**没有** `query_all`） |
 | `query_one(sql, params)` | 取单行 |
-| `execute(sql, params)` | 执行写操作 |
-| `execute_many(sql, seq)` | 批量写 |
-| `insert(table, row)` | 插入一行并返回 |
+| `execute(sql, params)` | 执行写操作，返回受影响行数 |
+| `execute_many(sql, params_list)` | 批量写，返回受影响行数 |
+| `insert(sql, params)` | 执行 INSERT，返回自增 ID |
 | `scalar(sql, params)` | 取单值 |
-| `count(table, where)` | 计数 |
-| `exists(table, where)` | 是否存在 |
+| `count(sql, params)` | 计数 |
+| `exists(sql, params)` | 是否存在 |
 | `table_exists(name)` / `table_has_column(t, c)` | 结构探测 |
 
 > 注意：批量查询的入口是 `query()`，不要使用不存在的 `query_all()`。
