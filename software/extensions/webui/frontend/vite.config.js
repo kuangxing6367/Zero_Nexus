@@ -11,7 +11,7 @@ export default defineConfig({
   },
   base: './',
   build: {
-    outDir: '../web',
+    outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {

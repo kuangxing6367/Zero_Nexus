@@ -10,7 +10,7 @@ build/
 *.egg
 
 # Vite 构建期临时配置快照
-webui/vite.config.js.timestamp-*
+software/extensions/webui/frontend/vite.config.js.timestamp-*
 
 # ============================================================
 # 文档站（VitePress）

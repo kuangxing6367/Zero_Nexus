@@ -16,8 +16,8 @@ def register(ctx):
     _project_root = ctx._project_root
 
     def _web_root_dir():
-        """前端根目录（框架默认 web/ 目录）"""
-        return os.path.join(_project_root(), 'web')
+        """前端根目录（归并到软件层 webui 扩展下的构建产物 frontend/dist）"""
+        return os.path.join(_project_root(), 'software', 'extensions', 'webui', 'frontend', 'dist')
 
     def _override_entry_url() -> str:
         """

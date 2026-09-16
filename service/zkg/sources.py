@@ -28,8 +28,11 @@ import glob
 import json
 import os
 import urllib.request
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+logger = logging.getLogger('zernus.zkg')
 
 
 @dataclass
@@ -82,14 +85,14 @@ class Source:
             try:
                 primary = self._http_json(self._base() + "/dist/index.json")
             except Exception as e:
-                print(f"[pkg] 源 {self.id} 主索引获取失败（跳过）: {e}")
+                logger.warning(f"源 {self.id} 主索引获取失败（跳过）: {e}")
                 return
             yield primary
             for sp in primary.get("splits", []):
                 try:
                     yield self._http_json(self._base() + "/dist/" + sp.lstrip("/"))
                 except Exception as e:
-                    print(f"[pkg] 源 {self.id} 分片 {sp} 获取失败（跳过）: {e}")
+                    logger.warning(f"源 {self.id} 分片 {sp} 获取失败（跳过）: {e}")
         else:
             raise ValueError(f"未知源类型: {self.type}")
 
