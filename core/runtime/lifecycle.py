@@ -146,6 +146,9 @@ async def start(fw):
     # 6. 启动统计批量写库器
     fw.stats_writer.start()
 
+    # 6.5 启动内核任务队列（绑定主事件循环，async 任务投递到主循环执行）
+    fw.task_queue.start(fw.loop)
+
     # 7. 启动心跳
     fw._heartbeat_task = asyncio.create_task(heartbeat_loop(fw), name="heartbeat")
 
@@ -189,6 +192,11 @@ async def stop(fw):
         logger.warning(f"关闭扩展点异常: {e}")
 
     fw.terminal.stop()
+
+    try:
+        await asyncio.to_thread(fw.task_queue.stop)
+    except Exception as e:
+        logger.warning(f"任务队列停止异常: {e}")
 
     try:
         await fw.stats_writer.stop()

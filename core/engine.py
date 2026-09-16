@@ -75,6 +75,17 @@ class Framework:
         self.terminal = TerminalInput(self)
         self.stats_writer = AsyncStatsWriter(self.db, self._db_executor)
 
+        # 内核任务队列（任务列表；core/service/software 均可提交后台任务）
+        from core.kernel.task_queue import TaskQueue
+        tq_cfg = self.config.get('task_queue') or {}
+        self.task_queue = TaskQueue(
+            workers=tq_cfg.get('workers', 4),
+            max_history=tq_cfg.get('max_history', 200),
+        )
+
+        # zkg 按需加载的机制包（service/startup 启动时填充；插件经 ctx.zkg_tool 取用）
+        self.zkg_tools = {}
+
         # 原始消息处理器注册表
         self._raw_message_handlers = []
         # 后台事件任务引用集

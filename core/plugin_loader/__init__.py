@@ -35,7 +35,6 @@ from .source_loader import _PluginSourceLoader
 from .pip import (
     pip_install_with_mirror,
     pip_install_all,
-    _get_host,
     pip_install_requirements,
     _parse_version_spec,
     _parse_ver,
@@ -71,7 +70,6 @@ __all__ = [
     '_PluginSourceLoader',
     'pip_install_with_mirror',
     'pip_install_all',
-    '_get_host',
     'pip_install_requirements',
     '_parse_version_spec',
     '_parse_ver',

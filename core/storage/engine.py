@@ -16,9 +16,16 @@ from threading import local
 from .dialect import (
     _translate_sql_for_sqlite, _translate_sql_for_mysql, _replace_now,
 )
+from .rate_limit import RateLimiter, RateLimitTimeout
 from core.hooks import HookPoints
 
 logger = logging.getLogger('zernus')
+
+# PooledDB blocking 超时抛出的池繁忙异常（老版本 DBUtils 可能缺失，退化为空元组）
+try:
+    from dbutils.exceptions import TooManyConnections as _PoolBusyError
+except ImportError:  # pragma: no cover - 仅极老版本 DBUtils 触发
+    _PoolBusyError = ()
 
 # MySQL 连接断开类错误码（触发自动重连）
 _MYSQL_RECONNECT_ERRORS = {2006, 2013, 2055, 1927, 1040}
@@ -59,6 +66,12 @@ class Database:
         self._pool_wait_timeout = float(config.get('pool_wait_timeout', 30) or 30)
         if self._pool_max_cached <= 0:
             self._pool_max_cached = self._pool_max
+        # 数据库速度限制（令牌桶；rate_limit_qps <= 0 不限速）
+        self._rate_limiter = RateLimiter(
+            qps=config.get('rate_limit_qps', 0) or 0,
+            burst=config.get('rate_limit_burst'),
+            wait_timeout=config.get('rate_limit_wait_timeout', 30) or 30,
+        )
         self._pool = None
 
         if self.db_type == 'mysql':
@@ -83,7 +96,7 @@ class Database:
         logger.info(f"SQLite 数据库已初始化: {db_path}")
 
     def _init_mysql(self):
-        """初始化 MySQL 连接池（检测到 MySQL 配置时，自动安装 pymysql/DBUtils）"""
+        """初始化 MySQL 连接池（需要 pymysql + DBUtils，缺失时报错并给出安装命令）"""
         try:
             import pymysql
             from pymysql.cursors import DictCursor
@@ -91,26 +104,10 @@ class Database:
             self._DictCursor = DictCursor
             logger.info("MySQL 模式已启用")
         except ImportError:
-            logger.warning("MySQL 模式需要 pymysql，正在自动安装...")
-            import subprocess
-            import sys
-            try:
-                result = subprocess.run(
-                    [sys.executable, '-m', 'pip', 'install', 'pymysql', 'DBUtils'],
-                    capture_output=True, text=True, timeout=120
-                )
-                if result.returncode == 0:
-                    logger.info("pymysql 安装成功，重新导入...")
-                    import pymysql
-                    from pymysql.cursors import DictCursor
-                    self._pymysql = pymysql
-                    self._DictCursor = DictCursor
-                else:
-                    logger.error(f"pymysql 自动安装失败: {result.stderr}")
-                    raise ImportError("pymysql 安装失败，请手动执行: pip install pymysql DBUtils")
-            except Exception as e:
-                logger.error(f"pymysql 自动安装异常: {e}")
-                raise ImportError(f"无法自动安装 pymysql: {e}")
+            # 内核不在请求路径里静默安装第三方包：依赖变更应显式、可审计
+            raise ImportError(
+                "MySQL 模式需要 pymysql 与 DBUtils，请先执行: pip install pymysql DBUtils"
+            )
 
         try:
             from dbutils.pooled_db import PooledDB
@@ -123,7 +120,8 @@ class Database:
             mincached=self._pool_min_cached,
             maxcached=self._pool_max_cached,
             maxshared=0,
-            blocking=False,
+            blocking=True,                      # 池满时阻塞等待，替代忙等轮询
+            blocking_timeout=self._pool_wait_timeout,  # 有界等待，超时抛 TooManyConnections
             setsession=[],
             reset=True,
             ping=1,
@@ -156,33 +154,33 @@ class Database:
             )
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
+            # WAL 模式标准配套：NORMAL 下每次提交不再等待 fsync 落盘，
+            # 由 WAL 检查点保证崩溃安全（断电最多丢最后一个事务）。
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA busy_timeout=5000")
             self._local.conn = conn
         return conn
 
     def _get_conn_mysql(self):
-        """从连接池借出连接（PooledDB 自动处理 ping/重建/回收，池满有界等待）"""
+        """从连接池借出连接（PooledDB 自动处理 ping/重建/回收）。
+
+        池满时由 PooledDB blocking=True 有界等待 blocking_timeout 秒，
+        超时抛 TooManyConnections，不再手写轮询空转。
+        """
         if self._pool is None:
             raise RuntimeError("MySQL 连接池未初始化")
-        deadline = time.time() + self._pool_wait_timeout
-        last_err = None
-        while True:
-            try:
-                return self._pool.connection()
-            except Exception as e:
-                last_err = e
-                if time.time() >= deadline:
-                    logger.error(
-                        f"MySQL 连接池繁忙: {self._pool_max} 个连接全被占用超 "
-                        f"{self._pool_wait_timeout}s（{last_err}）。"
-                        f"请检查是否存在连接未归还"
-                    )
-                    raise RuntimeError(
-                        f"MySQL 连接池繁忙（{self._pool_max} 个连接全被占用超 "
-                        f"{self._pool_wait_timeout}s），请检查连接泄漏"
-                    ) from None
-                time.sleep(0.05)
+        try:
+            return self._pool.connection()
+        except _PoolBusyError:
+            logger.error(
+                f"MySQL 连接池繁忙: {self._pool_max} 个连接全被占用超 "
+                f"{self._pool_wait_timeout}s。请检查是否存在连接未归还"
+            )
+            raise RuntimeError(
+                f"MySQL 连接池繁忙（{self._pool_max} 个连接全被占用超 "
+                f"{self._pool_wait_timeout}s），请检查连接泄漏"
+            ) from None
 
     def _close_thread_conn(self):
         """关闭当前线程的 SQLite 连接并释放线程本地状态。"""
@@ -269,63 +267,100 @@ class Database:
 
     # ── 公开 API ──
 
-    def query(self, sql: str, params: tuple = None) -> list:
-        """查询多条记录，返回 list[dict]"""
+    def _before_sql(self):
+        """SQL 执行前限速放行（超过等待上限时抛 RateLimitTimeout）"""
+        if not self._rate_limiter.acquire():
+            raise RateLimitTimeout(
+                f"数据库限速等待超时（qps={self._rate_limiter.qps}, "
+                f"wait_timeout={self._rate_limiter.wait_timeout}s）"
+            )
+
+    # ── 公共执行路径 ──
+    # 五个 CRUD 入口共用的执行管道：限速 → SQL 方言翻译 → hook →
+    # 断线重连 → 事务感知提交/回滚。mode 决定取结果方式与 NOW() 替换；
+    # 公开方法只负责声明 mode 与扩展点，返回值语义保持不变。
+
+    _WRITE_MODES = ('execute', 'executemany', 'insert')
+
+    def _run_sql(self, sql: str, params, *, mode: str, hook_before: str, hook_after: str):
+        """公共 SQL 执行路径。返回值语义由各公开 API 保证不变：
+        query→list[dict]、query_one→dict/None、execute/execute_many→受影响行数、
+        insert→自增 ID。
+        """
+        self._before_sql()
+
         def _do(sql, params):
             conn = self._get_conn()
             cursor = conn.cursor()
             try:
                 if self.db_type == 'sqlite':
+                    if mode in self._WRITE_MODES and 'NOW()' in sql.upper():
+                        if mode == 'executemany':
+                            old_sql = sql
+                            sql, _ = _replace_now(sql, params[0] if params else None)
+                            params = [_replace_now(old_sql, p)[1] for p in params]
+                        else:
+                            sql, params = _replace_now(sql, params)
                     sql = _translate_sql_for_sqlite(sql)
                 else:
                     sql = _translate_sql_for_mysql(sql)
-                self._exec(cursor, sql, params)
-                rows = cursor.fetchall()
-                if self.db_type == 'sqlite':
-                    return [dict(r) for r in rows]
-                return rows
+
+                if mode == 'query':
+                    self._exec(cursor, sql, params)
+                    rows = cursor.fetchall()
+                    return [dict(r) for r in rows] if self.db_type == 'sqlite' else rows
+                if mode == 'query_one':
+                    self._exec(cursor, sql, params)
+                    row = cursor.fetchone()
+                    if row is None:
+                        return None
+                    return dict(row) if self.db_type == 'sqlite' else row
+
+                if mode == 'executemany':
+                    cursor.executemany(sql, params)
+                else:
+                    self._exec(cursor, sql, params)
+                if self._should_commit():
+                    conn.commit()
+                return cursor.lastrowid if mode == 'insert' else cursor.rowcount
+            except Exception:
+                if not getattr(self._local, 'in_txn', False):
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                raise
             finally:
                 cursor.close()
                 if self.db_type == 'mysql':
                     conn.close()
-        self._fire_db_hook(HookPoints.DB_QUERY_BEFORE, sql, params)
+
+        self._fire_db_hook(hook_before, sql, params)
         try:
             result = self._run_with_reconnect(_do, sql, params)
         except Exception as e:
-            self._fire_db_hook(HookPoints.DB_QUERY_AFTER, sql, params, error=e)
+            self._fire_db_hook(hook_after, sql, params, error=e)
             raise
-        self._fire_db_hook(HookPoints.DB_QUERY_AFTER, sql, params, result=result)
+        self._fire_db_hook(hook_after, sql, params, result=result)
         return result
+
+    def query(self, sql: str, params: tuple = None) -> list:
+        """查询多条记录，返回 list[dict]"""
+        return self._run_sql(
+            sql, params,
+            mode='query',
+            hook_before=HookPoints.DB_QUERY_BEFORE,
+            hook_after=HookPoints.DB_QUERY_AFTER,
+        )
 
     def query_one(self, sql: str, params: tuple = None) -> dict:
         """查询单条记录，返回 dict 或 None"""
-        def _do(sql, params):
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            try:
-                if self.db_type == 'sqlite':
-                    sql = _translate_sql_for_sqlite(sql)
-                else:
-                    sql = _translate_sql_for_mysql(sql)
-                self._exec(cursor, sql, params)
-                row = cursor.fetchone()
-                if row is None:
-                    return None
-                if self.db_type == 'sqlite':
-                    return dict(row)
-                return row
-            finally:
-                cursor.close()
-                if self.db_type == 'mysql':
-                    conn.close()
-        self._fire_db_hook(HookPoints.DB_QUERY_BEFORE, sql, params)
-        try:
-            result = self._run_with_reconnect(_do, sql, params)
-        except Exception as e:
-            self._fire_db_hook(HookPoints.DB_QUERY_AFTER, sql, params, error=e)
-            raise
-        self._fire_db_hook(HookPoints.DB_QUERY_AFTER, sql, params, result=result)
-        return result
+        return self._run_sql(
+            sql, params,
+            mode='query_one',
+            hook_before=HookPoints.DB_QUERY_BEFORE,
+            hook_after=HookPoints.DB_QUERY_AFTER,
+        )
 
     def _exec(self, cursor, sql: str, params=None):
         """执行 sql，自动处理 params 为 None 的情况"""
@@ -336,110 +371,30 @@ class Database:
 
     def execute(self, sql: str, params: tuple = None) -> int:
         """执行插入/更新/删除，返回受影响行数"""
-        def _do(sql, params):
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            try:
-                if self.db_type == 'sqlite':
-                    if 'NOW()' in sql.upper():
-                        sql, params = _replace_now(sql, params)
-                    sql = _translate_sql_for_sqlite(sql)
-                else:
-                    sql = _translate_sql_for_mysql(sql)
-                self._exec(cursor, sql, params)
-                if self._should_commit():
-                    conn.commit()
-                return cursor.rowcount
-            except Exception:
-                if not getattr(self._local, 'in_txn', False):
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                raise
-            finally:
-                cursor.close()
-                if self.db_type == 'mysql':
-                    conn.close()
-        self._fire_db_hook(HookPoints.DB_EXECUTE_BEFORE, sql, params)
-        try:
-            result = self._run_with_reconnect(_do, sql, params)
-        except Exception as e:
-            self._fire_db_hook(HookPoints.DB_EXECUTE_AFTER, sql, params, error=e)
-            raise
-        self._fire_db_hook(HookPoints.DB_EXECUTE_AFTER, sql, params, result=result)
-        return result
+        return self._run_sql(
+            sql, params,
+            mode='execute',
+            hook_before=HookPoints.DB_EXECUTE_BEFORE,
+            hook_after=HookPoints.DB_EXECUTE_AFTER,
+        )
 
     def execute_many(self, sql: str, params_list: list) -> int:
         """批量执行，返回受影响行数"""
-        def _do(sql, params_list):
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            try:
-                if self.db_type == 'sqlite':
-                    if 'NOW()' in sql.upper():
-                        new_sql, _ = _replace_now(sql, params_list[0] if params_list else None)
-                        new_params_list = []
-                        for p in params_list:
-                            _, now_p = _replace_now(sql, p)
-                            new_params_list.append(now_p)
-                        sql = new_sql
-                        params_list = new_params_list
-                    sql = _translate_sql_for_sqlite(sql)
-                else:
-                    sql = _translate_sql_for_mysql(sql)
-                cursor.executemany(sql, params_list)
-                if self._should_commit():
-                    conn.commit()
-                return cursor.rowcount
-            except Exception:
-                if not getattr(self._local, 'in_txn', False):
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                raise
-            finally:
-                cursor.close()
-                if self.db_type == 'mysql':
-                    conn.close()
-        self._fire_db_hook(HookPoints.DB_EXECUTE_BEFORE, sql, params_list)
-        try:
-            result = self._run_with_reconnect(_do, sql, params_list)
-        except Exception as e:
-            self._fire_db_hook(HookPoints.DB_EXECUTE_AFTER, sql, params_list, error=e)
-            raise
-        self._fire_db_hook(HookPoints.DB_EXECUTE_AFTER, sql, params_list, result=result)
-        return result
+        return self._run_sql(
+            sql, params_list,
+            mode='executemany',
+            hook_before=HookPoints.DB_EXECUTE_BEFORE,
+            hook_after=HookPoints.DB_EXECUTE_AFTER,
+        )
 
     def insert(self, sql: str, params: tuple = None) -> int:
         """插入并返回自增 ID"""
-        def _do(sql, params):
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            try:
-                if self.db_type == 'sqlite':
-                    if 'NOW()' in sql.upper():
-                        sql, params = _replace_now(sql, params)
-                    sql = _translate_sql_for_sqlite(sql)
-                else:
-                    sql = _translate_sql_for_mysql(sql)
-                self._exec(cursor, sql, params)
-                if self._should_commit():
-                    conn.commit()
-                return cursor.lastrowid
-            except Exception:
-                if not getattr(self._local, 'in_txn', False):
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                raise
-            finally:
-                cursor.close()
-                if self.db_type == 'mysql':
-                    conn.close()
-        return self._run_with_reconnect(_do, sql, params)
+        return self._run_sql(
+            sql, params,
+            mode='insert',
+            hook_before=HookPoints.DB_INSERT_BEFORE,
+            hook_after=HookPoints.DB_INSERT_AFTER,
+        )
 
     def get_connection(self):
         """获取原始连接（高级用法）"""
@@ -545,7 +500,13 @@ class Database:
         return {
             'type': self.db_type,
             'path': getattr(self, '_db_path', None),
+            'rate_limit': self.rate_limit_status,
         }
+
+    @property
+    def rate_limit_status(self) -> dict:
+        """数据库限速器当前状态（含放行 / 拦截计数）"""
+        return self._rate_limiter.status()
 
     def close(self):
         """关闭连接：MySQL 关闭整个连接池，SQLite 关闭当前线程连接"""

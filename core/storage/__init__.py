@@ -17,6 +17,7 @@ from .dialect import (
     _on_duplicate_to_sqlite,
 )
 from .engine import Database
+from .rate_limit import RateLimiter, RateLimitTimeout
 from .migrations import (
     init_db, _auto_create_tables, _parse_sqlite_type,
     _migrate_commands_table, _migrate_commands_require_perm, _migrate_users_table,
@@ -29,6 +30,8 @@ db = None
 
 __all__ = [
     'Database',
+    'RateLimiter',
+    'RateLimitTimeout',
     'init_db',
     '_auto_create_tables',
     '_parse_sqlite_type',

@@ -61,6 +61,8 @@ class HookPoints:
     DB_QUERY_AFTER = 'db.query.after'
     DB_EXECUTE_BEFORE = 'db.execute.before'
     DB_EXECUTE_AFTER = 'db.execute.after'
+    DB_INSERT_BEFORE = 'db.insert.before'
+    DB_INSERT_AFTER = 'db.insert.after'
     SESSION_CREATE_BEFORE = 'session.create.before'
     SESSION_CREATE_AFTER = 'session.create.after'
     SESSION_WAIT_BEFORE = 'session.wait.before'

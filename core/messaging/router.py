@@ -104,13 +104,18 @@ class MessageRouter:
         self._plugin_order: list = []  # 有序插件名列表
         self._keyword_rules: list = []  # 系统关键词自动回复规则（dynamic_commands 表）
         self._routes_lock = threading.Lock()  # 兜底锁（保护快照交换）
-        self._refresh_interval = 5.0  # 路由表刷新间隔（秒）
+        # 兜底全量重建间隔（秒）。正常变更走 _invalidate_cache() 事件唤醒，
+        # 无需轮询；该间隔仅兜底「直接改库绕过 API」的场景。
+        self._refresh_interval = float(
+            (framework.config.get('messaging', {}) or {}).get('route_refresh_interval', 60) or 60)
         self._refresh_task = None
         self._force_refresh = False   # 外部置位后立即重建（插件变更等）
+        self._wakeup = None           # asyncio.Event，start() 时创建
 
     def start(self, loop):
         """启动后台路由表刷新任务（在主事件循环内调用）"""
         if self._refresh_task is None:
+            self._wakeup = asyncio.Event()
             self._refresh_task = loop.create_task(
                 self._refresh_loop(), name="router-refresh")
 
@@ -125,20 +130,29 @@ class MessageRouter:
             self._refresh_task = None
 
     async def _refresh_loop(self):
-        """周期性重建内存路由表（DB 访问在线程中，不阻塞事件循环）"""
+        """事件驱动重建内存路由表（DB 访问在线程中，不阻塞事件循环）。
+
+        _invalidate_cache() 唤醒事件 → 立即重建；
+        无变更时每 _refresh_interval 秒兜底全量重建一次。
+        """
         while True:
             try:
                 await asyncio.to_thread(self._rebuild_routes)
                 if self._force_refresh:
                     self._force_refresh = False
-                    continue  # 外部有变更，跳过休眠立即再建一次
+                    continue  # 重建期间又有变更，立即再建一次
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error(f"路由表刷新异常: {e}")
-                await asyncio.sleep(1)
-                continue
-            await asyncio.sleep(self._refresh_interval)
+            # 等待：外部唤醒 或 兜底间隔超时
+            try:
+                await asyncio.wait_for(self._wakeup.wait(), timeout=self._refresh_interval)
+            except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                raise
+            self._wakeup.clear()
 
     def _rebuild_routes(self):
         """从 DB 构建纯内存路由表（在 to_thread 中执行）"""
@@ -297,6 +311,12 @@ class MessageRouter:
     def _invalidate_cache(self):
         """使路由表立即重建（插件重载 / Web 修改命令后调用）"""
         self._force_refresh = True
+        # 唤醒刷新循环（start 未调用时 _wakeup 尚未创建，下次 start 后自然生效）
+        if self._wakeup is not None:
+            try:
+                self._wakeup.set()
+            except Exception:
+                pass
 
     async def route(self, event: dict, bot_name: str = 'default'):
         """

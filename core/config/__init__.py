@@ -27,24 +27,33 @@ _DEFAULT_CONFIG = """\
 # ============================================================
 
 # ── 内核级（core）：数据库 ───────────────────────────────────
-# 支持 SQLite / MySQL / PostgreSQL 三种；由 type 切换。
+# 实现 SQLite / MySQL 两种（PostgreSQL 仅保留方言翻译，连接未实现）；由 type 切换。
 database:
-  type: sqlite                       # sqlite | mysql | postgresql
+  type: sqlite                       # sqlite | mysql（postgresql 会回退 SQLite 行为）
   path: data/zernus.db
-  # MySQL 模式：
+  # MySQL 模式（需先 pip install pymysql DBUtils）：
   # type: mysql
   # host: 127.0.0.1
   # port: 3306
   # user: root
   # password: ""
   # database: zernus
-  # PostgreSQL 模式（需安装驱动，见 requirements.txt 注释）：
-  # type: postgresql
-  # host: 127.0.0.1
-  # port: 5432
-  # user: postgres
-  # password: ""
-  # database: zernus
+  rate_limit_qps: 0                     # 每秒放行的数据库操作数（0 = 不限速）
+  # rate_limit_burst: 10                # 桶容量（允许的瞬时突发量），缺省 = qps
+  rate_limit_wait_timeout: 30           # 获取令牌最长等待秒数，超时抛 RateLimitTimeout
+
+# ── 内核级：任务队列（任务列表） ────────────────────────────
+# 通用后台任务列表：core / service / software 均可提交 sync 或 async 任务，
+# 由 worker 线程按 FIFO 执行；任务状态可通过内核 API / 终端查询。
+task_queue:
+  workers: 4                            # worker 线程数
+  max_history: 200                      # 保留的已完成任务记录条数
+
+# ── 内核级：消息路由 ────────────────────────────────────────
+# 内存路由表事件驱动重建：插件/命令变更即时生效；
+# 此间隔仅为「直接改库绕过 API」场景的兜底全量重建周期。
+messaging:
+  route_refresh_interval: 60            # 兜底重建间隔（秒）
 
 # ── 内核级：本地端口 ────────────────────────────────────────
 core:

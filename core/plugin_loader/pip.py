@@ -16,10 +16,10 @@ logger = logging.getLogger('zernus')
 
 
 # ── pip 镜像源列表（按优先级，第一个是清华源，后续是回退）─────────────
+# 全部为 https：不加 --trusted-host（那会禁用证书校验，给劫持安装开洞）
 _PIP_MIRRORS = [
     'https://pypi.tuna.tsinghua.edu.cn/simple',
     'https://mirrors.aliyun.com/pypi/simple',
-    'https://pypi.douban.com/simple',
     'https://pypi.org/simple',  # 官方源（最后回退）
 ]
 
@@ -56,7 +56,7 @@ def pip_install_with_mirror(pip_exec, packages, timeout=120) -> dict:
     last_error = ''
     for mirror in _PIP_MIRRORS:
         try:
-            cmd = install_args + ['-i', mirror, '--trusted-host', _get_host(mirror)]
+            cmd = install_args + ['-i', mirror]
             logger.info(f"pip 安装中（镜像: {mirror}）: {packages_list}")
             subprocess.check_call(
                 cmd,
@@ -92,15 +92,6 @@ def pip_install_all(plugin_name: str, deps: list):
             logger.warning(f"[{plugin_name}] 依赖安装异常: {dep} - {e}")
 
 
-def _get_host(url: str) -> str:
-    """从镜像 URL 提取 host"""
-    try:
-        from urllib.parse import urlparse
-        return urlparse(url).hostname
-    except Exception:
-        return ''
-
-
 def pip_install_requirements(pip_exec, req_file, timeout=300) -> dict:
     """
     安装 requirements.txt，走清华源 + 回退
@@ -112,8 +103,7 @@ def pip_install_requirements(pip_exec, req_file, timeout=300) -> dict:
     last_error = ''
     for mirror in _PIP_MIRRORS:
         try:
-            cmd = [pip_exec, '-m', 'pip', 'install', '-r', req_file,
-                   '-i', mirror, '--trusted-host', _get_host(mirror)]
+            cmd = [pip_exec, '-m', 'pip', 'install', '-r', req_file, '-i', mirror]
             logger.info(f"pip 安装 requirements（镜像: {mirror}）: {req_file}")
             subprocess.check_call(
                 cmd,
