@@ -6,7 +6,7 @@
 帧格式（大端序，所有帧共用定长头，载荷变长）：
   offset 0     : type  (1B)   帧类型，调用方自定义语义
   offset 1-4   : ts    (4B)   时间戳（秒，uint32）
-  offset 5-20  : token (16B)  HMAC-SHA256(secret, ts4) 前 16 字节
+  offset 5-20  : token (16B)  HMAC-SHA256(secret, ts4|ftype1|seq4|payload) 前 16 字节
   offset 21-24 : plen (4B)    载荷字节数
   offset 25-28 : seq   (4B)   单调序号（防重放）
   offset 29+   : payload      变长载荷（任意字节，约定 UTF-8 文本）
@@ -14,9 +14,10 @@
 头长 HEADER_LEN = 29。
 ------------------------------------------------------------
 安全模型（无 TLS 时走私有隧道 / 内网）：
-  - 固定对称密钥 + HMAC Token + 时间戳窗口
+  - 固定对称密钥 + 整帧 HMAC Token（覆盖 ts / ftype / seq / payload）+ 时间戳窗口
   - 单调序号（ts 或 seq）判重放
   - 恒定时间令牌比对（hmac.compare_digest）
+  - 服务端空闲 / 半帧超时，客户端连接超时（防 Slowloris 式拖死）
 ------------------------------------------------------------
 
 源自 ZCBOT / minecraftconsole 的 MC agent 协议，已剥离 MC 专属字段
@@ -45,6 +46,9 @@ SEQ_OFF = 25
 DEFAULT_REPLAY_WINDOW = 3.0        # 时间戳窗口（秒），超窗即丢（防重放 / DDoS）
 DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024   # 16MB 载荷上限（防 DoS 无限占内存）
 DEFAULT_BUF_SIZE = 8192            # 单次 read 上限
+DEFAULT_IDLE_TIMEOUT = 60.0        # 连接空闲超时（秒）：持续无数据则断开
+DEFAULT_FRAME_TIMEOUT = 30.0       # 单帧完成超时（秒）：半帧数据迟迟不补齐则断开
+DEFAULT_CONNECT_TIMEOUT = 10.0     # 客户端连接超时（秒）
 
 
 class Frame:
@@ -86,21 +90,27 @@ class FrameCodec:
         self.replay_window = float(replay_window)
 
     # ---------------------------------------------------------- 编解码
-    def make_token(self, ts: int) -> bytes:
-        """基于固定对称密钥 + 时间戳的 16 字节 HMAC Token。"""
-        return hmac.new(self.secret, struct.pack(">I", ts), hashlib.sha256).digest()[:self.TOKEN_LEN]
+    def make_token(self, ts: int, ftype: int, seq: int, payload: bytes) -> bytes:
+        """整帧 HMAC Token（16 字节）：覆盖 ts / ftype / seq / payload。
+
+        只签时间戳的话，同一秒内所有帧共享同一 token，嗅探一帧即可
+        用任意更大 seq 伪造合法帧；整帧签名杜绝该问题。
+        """
+        msg = struct.pack(">IBI", ts, ftype & 0xFF, seq) + bytes(payload)
+        return hmac.new(self.secret, msg, hashlib.sha256).digest()[:self.TOKEN_LEN]
 
     def encode(self, ftype: int, ts: int, seq: int, payload: bytes) -> bytes:
         """编码一帧：定长头 + 变长载荷。"""
         if not isinstance(payload, (bytes, bytearray)):
             raise TypeError("payload 必须为 bytes")
+        payload = bytes(payload)
         header = bytearray(self.HEADER_LEN)
         header[0] = ftype & 0xFF
         struct.pack_into(">I", header, self.TS_OFF, ts)
-        header[self.TOKEN_OFF:self.TOKEN_OFF + self.TOKEN_LEN] = self.make_token(ts)
+        header[self.TOKEN_OFF:self.TOKEN_OFF + self.TOKEN_LEN] = self.make_token(ts, ftype, seq, payload)
         struct.pack_into(">I", header, self.PLEN_OFF, len(payload))
         struct.pack_into(">I", header, self.SEQ_OFF, seq)
-        return bytes(header) + bytes(payload)
+        return bytes(header) + payload
 
     def decode(self, frame: bytes) -> Frame:
         """解析一帧。frame 至少为完整 HEADER_LEN。"""
@@ -115,26 +125,33 @@ class FrameCodec:
         return Frame(ftype, ts, token, plen, seq, payload)
 
     # ---------------------------------------------------------- 校验
-    def verify_ts(self, ts: int, token: bytes, last_ts: int) -> Tuple[bool, str]:
-        """时间戳窗口 + Token + 单调时间戳判重放。返回 (ok, reason)。"""
-        if abs(time.time() - ts) > self.replay_window:
+    def _check_common(self, frame: Frame) -> Tuple[bool, str]:
+        """时间戳窗口 + 整帧 Token 校验（verify_ts / verify_seq 共用）。"""
+        if abs(time.time() - frame.ts) > self.replay_window:
             return False, "stale-timestamp"
-        if not hmac.compare_digest(token, self.make_token(ts)):
+        expect = self.make_token(frame.ts, frame.type, frame.seq, frame.payload)
+        if not hmac.compare_digest(frame.token, expect):
             return False, "bad-token"
-        if ts <= last_ts:
+        return True, ""
+
+    def verify_ts(self, frame: Frame, last_ts: int) -> Tuple[bool, str]:
+        """时间戳窗口 + 整帧 Token + 单调时间戳判重放。返回 (ok, reason)。"""
+        ok, reason = self._check_common(frame)
+        if not ok:
+            return False, reason
+        if frame.ts <= last_ts:
             return False, "replay-seq"
         return True, ""
 
-    def verify_seq(self, ts: int, token: bytes, seq: int, last_seq: int) -> Tuple[bool, str]:
-        """时间戳窗口 + Token + 单调序号判重放。返回 (ok, reason)。
+    def verify_seq(self, frame: Frame, last_seq: int) -> Tuple[bool, str]:
+        """时间戳窗口 + 整帧 Token + 单调序号判重放。返回 (ok, reason)。
 
         同秒并发时 ts 相同，必须用 seq 单调判重放，避免误丢弃。
         """
-        if abs(time.time() - ts) > self.replay_window:
-            return False, "stale-timestamp"
-        if not hmac.compare_digest(token, self.make_token(ts)):
-            return False, "bad-token"
-        if seq <= last_seq:
+        ok, reason = self._check_common(frame)
+        if not ok:
+            return False, reason
+        if frame.seq <= last_seq:
             return False, "replay-seq"
         return True, ""
 
@@ -162,6 +179,8 @@ class FramedServer:
         replay_window: float = DEFAULT_REPLAY_WINDOW,
         max_payload: int = DEFAULT_MAX_PAYLOAD,
         buf_size: int = DEFAULT_BUF_SIZE,
+        idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+        frame_timeout: float = DEFAULT_FRAME_TIMEOUT,
     ):
         """
         :param secret: 固定对称密钥（非空 bytes）
@@ -169,6 +188,8 @@ class FramedServer:
         :param verify_mode: "seq" 用单调序号判重放；"ts" 用单调时间戳判重放
         :param valid_types: 允许的帧类型集合；提供后遇到非法首字节即跳 1 字节重同步；
                             为 None 则不恢复失步（调用方自行保证）
+        :param idle_timeout: 空闲超时（秒）：缓冲无半帧数据且持续无新数据则断开；<=0 不限
+        :param frame_timeout: 半帧超时（秒）：帧未到齐且持续无新数据则断开；<=0 不限
         """
         self._codec = FrameCodec(secret, replay_window=replay_window)
         self._on_frame = on_frame
@@ -178,6 +199,8 @@ class FramedServer:
         self._valid_types = valid_types
         self._max_payload = max_payload
         self._buf_size = buf_size
+        self._idle_timeout = float(idle_timeout) if idle_timeout else 0.0
+        self._frame_timeout = float(frame_timeout) if frame_timeout else 0.0
         self._server: Optional[asyncio.AbstractServer] = None
 
     @property
@@ -210,7 +233,18 @@ class FramedServer:
         logger.info("[framed] 对端接入 %s", peer)
         try:
             while True:
-                chunk = await reader.read(self._buf_size)
+                # 空闲 / 半帧超时：缓冲为空（等待新帧起始）用 idle_timeout，
+                # 已有半帧迟迟不补齐用 frame_timeout；<=0 视为不限。
+                timeout = self._frame_timeout if buf else self._idle_timeout
+                if timeout > 0:
+                    try:
+                        chunk = await asyncio.wait_for(reader.read(self._buf_size), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        logger.warning("[framed] %s超时 %.0fs，断开 %s",
+                                       "半帧" if buf else "空闲", timeout, peer)
+                        break
+                else:
+                    chunk = await reader.read(self._buf_size)
                 if not chunk:                       # 对端关闭
                     break
                 buf.extend(chunk)
@@ -235,11 +269,11 @@ class FramedServer:
 
                     fr = self._codec.decode(raw)
                     if self._verify_mode == "ts":
-                        ok, reason = self._codec.verify_ts(fr.ts, fr.token, last_ts)
+                        ok, reason = self._codec.verify_ts(fr, last_ts)
                         if ok:
                             last_ts = fr.ts
                     else:
-                        ok, reason = self._codec.verify_seq(fr.ts, fr.token, fr.seq, last_seq)
+                        ok, reason = self._codec.verify_seq(fr, last_seq)
                         if ok:
                             last_seq = fr.seq
                     if not ok:
@@ -265,8 +299,13 @@ class FramedClient:
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
 
-    async def connect(self, host: str, port: int):
-        self._reader, self._writer = await asyncio.open_connection(host, port)
+    async def connect(self, host: str, port: int, timeout: float = DEFAULT_CONNECT_TIMEOUT):
+        """建立连接；timeout<=0 视为不限，超时抛 asyncio.TimeoutError。"""
+        coro = asyncio.open_connection(host, port)
+        if timeout and timeout > 0:
+            self._reader, self._writer = await asyncio.wait_for(coro, timeout=timeout)
+        else:
+            self._reader, self._writer = await coro
 
     def encode(self, ftype: int, seq: int, payload: bytes) -> bytes:
         return self._codec.encode(ftype, int(time.time()), seq, payload)

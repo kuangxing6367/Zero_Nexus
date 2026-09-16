@@ -30,6 +30,7 @@ Web 应用核心：Flask app 构建 + 共享基础设施 + WebServer
 
 向后兼容：framework/apis.py 仍导出 create_web_app / WebServer。
 """
+import hashlib
 import json
 import logging
 import os
@@ -758,27 +759,36 @@ def create_web_app(framework) -> Flask:
         return req.cookies.get('zernus_token')
 
     def _verify_token(token):
-        """验证 token，返回 admin 字典或 None（支持用户会话 token 与接口令牌 API Key）"""
+        """验证 token，返回 admin 字典或 None（支持用户会话 token 与接口令牌 API Key）
+
+        用户会话 token 在库内存 sha256 哈希（不再明文落库）；升级前入库的
+        明文 token 按明文比对兼容，旧会话重新登录或过期后自然淘汰。
+        """
         if not token:
             return None
-        if len(token) == 2048:
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        row = db.query_one(
+            "SELECT id, username, role, is_active, token_created_at FROM admin_users WHERE token = %s",
+            (token_hash,)
+        )
+        if row is None:
             row = db.query_one(
                 "SELECT id, username, role, is_active, token_created_at FROM admin_users WHERE token = %s",
                 (token,)
             )
-            if row and row['is_active']:
-                timeout = web_cfg.get('token_timeout') or web_cfg.get('session_timeout', 86400)
-                if row['token_created_at']:
-                    created = row['token_created_at']
-                    if isinstance(created, str):
-                        try:
-                            created = datetime.strptime(created, '%Y-%m-%d %H:%M:%S')
-                        except ValueError:
-                            return None
-                    expiry = created + timedelta(seconds=timeout)
-                    if datetime.now() > expiry:
+        if row and row['is_active']:
+            timeout = web_cfg.get('token_timeout') or web_cfg.get('session_timeout', 86400)
+            if row['token_created_at']:
+                created = row['token_created_at']
+                if isinstance(created, str):
+                    try:
+                        created = datetime.strptime(created, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
                         return None
-                return {'id': row['id'], 'username': row['username'], 'role': row['role']}
+                expiry = created + timedelta(seconds=timeout)
+                if datetime.now() > expiry:
+                    return None
+            return {'id': row['id'], 'username': row['username'], 'role': row['role']}
         if len(token) >= 40:
             row = db.query_one(
                 "SELECT id, name, role, is_active, expires_at, last_used_at FROM api_tokens WHERE token = %s",

@@ -63,7 +63,7 @@ def register(ctx):
         expires_at = None
         if isinstance(expires_in, (int, float)) and expires_in > 0:
             expires_at = str(int(time.time()) + int(expires_in))
-        token = secrets.token_hex(32)  # 64 字符，>=40 且 != 2048，避开会话 token 分支
+        token = secrets.token_hex(32)  # 64 字符；验证时先查 admin_users（哈希/明文兼容）落空后才进 api_tokens 分支
         now = str(int(time.time()))
         try:
             db.execute(

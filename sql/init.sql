@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
     id              INT             AUTO_INCREMENT  PRIMARY KEY,
     username        VARCHAR(50)     NOT NULL        COMMENT '用户名',
     password_hash   VARCHAR(255)    NOT NULL        COMMENT '密码哈希(pbkdf2_sha256)',
-    token           VARCHAR(2048)   DEFAULT NULL    COMMENT '登录令牌(2048位随机)',
+    token           VARCHAR(2048)   DEFAULT NULL    COMMENT '登录令牌(sha256 哈希，明文不落库)',
     token_created_at DATETIME       DEFAULT NULL    COMMENT '令牌签发时间',
     role            ENUM('super','admin')           DEFAULT 'admin'  COMMENT '角色',
     is_active       TINYINT(1)      DEFAULT 1       COMMENT '启用/禁用',

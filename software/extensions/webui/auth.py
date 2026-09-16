@@ -2,6 +2,7 @@
 """
 认证接口：登录 / 登出 / 当前用户 / 改密 + 通讯安全校验
 """
+import hashlib
 import logging
 
 import secrets
@@ -85,11 +86,12 @@ def register(ctx):
         except Exception as e:
             logger.warning(f"密码哈希升级失败（忽略）: {e}")
 
-        # 生成 2048 位随机 token
-        token = secrets.token_hex(1024)  # 2048 字符
+        # 生成 256 位随机会话 token；库内仅存 sha256 哈希（防拖库后 会话被直接复用）
+        token = secrets.token_hex(32)  # 64 字符
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
         db.execute(
             "UPDATE admin_users SET token = %s, token_created_at = NOW(), last_login_at = NOW(), last_login_ip = %s WHERE id = %s",
-            (token, get_client_ip(), row['id'])
+            (token_hash, get_client_ip(), row['id'])
         )
         audit_log(row['id'], username, 'login', result='success')
 
