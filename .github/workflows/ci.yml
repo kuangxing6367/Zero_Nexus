@@ -32,7 +32,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyyaml flask flask-cors waitress websockets requests
+          python -m pip install pyyaml flask flask-cors waitress websockets requests pillow
 
       # zkg 官方源索引与包池是构建产物（repo/dist、repo/pool 不入库），
       # 部分测试依赖其存在，先构建一次。

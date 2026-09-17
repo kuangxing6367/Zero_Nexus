@@ -225,9 +225,54 @@ def _gradient_row(top, bottom, y, height):
     return tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)) + (255,)
 
 
+def _load_bg_image(width, height, options):
+    """加载并处理背景图（PIL 渲染器共用）。
+
+    options 支持：
+      bg_image  图片 bytes 或文件路径（设置后优先于 bg_color / bg_gradient）
+      bg_blur   高斯模糊半径（sigma），0 不模糊——模糊在裁剪前做，省算力
+      bg_cover  True（默认）等比放大裁剪填满（CSS cover）；False 直接拉伸
+      bg_dim    0-255 半透明黑色压暗层，保证浅色文字可读（默认 0 不压暗）
+    处理失败返回 None（回退纯色/渐变背景，不炸渲染）。
+    """
+    src = options.get('bg_image')
+    if src is None:
+        return None
+    try:
+        from PIL import Image, ImageFilter
+        import io as _io
+        if isinstance(src, (bytes, bytearray)):
+            img = Image.open(_io.BytesIO(bytes(src)))
+        else:
+            img = Image.open(str(src))
+        img = img.convert("RGBA")
+        blur = float(options.get('bg_blur', 0) or 0)
+        if blur > 0:
+            img = img.filter(ImageFilter.GaussianBlur(blur))
+        w, h = int(width), int(height)
+        if options.get('bg_cover', True):
+            ratio = max(w / img.width, h / img.height)
+            nw, nh = max(w, round(img.width * ratio)), max(h, round(img.height * ratio))
+            img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+            left, top = (nw - w) // 2, (nh - h) // 2
+            img = img.crop((left, top, left + w, top + h))
+        else:
+            img = img.resize((w, h), Image.Resampling.LANCZOS)
+        dim = int(options.get('bg_dim', 0) or 0)
+        if dim > 0:
+            ov = Image.new("RGBA", (w, h), (0, 0, 0, min(255, dim)))
+            img.alpha_composite(ov)
+        return img
+    except Exception as e:
+        logger.warning(f"[image_renderer] 背景图处理失败，回退默认背景: {e}")
+        return None
+
+
 def _render_card_image(title, content, width=600, padding=30, options=None):
     """渲染信息卡片。原生可用返回 PNG bytes，否则返回 PIL Image"""
-    if _NATIVE is not None:
+    options = options or {}
+    # bg_image 走 PIL（原生 options 不识别该键，保证行为一致）
+    if options.get('bg_image') is None and _NATIVE is not None:
         font = _find_font_path()
         if font:
             try:
@@ -240,7 +285,8 @@ def _render_card_image(title, content, width=600, padding=30, options=None):
 
 def _render_text_image(text, width=500, padding=20, options=None):
     """将文字渲染为图片。原生可用返回 PNG bytes，否则返回 PIL Image"""
-    if _NATIVE is not None:
+    options = options or {}
+    if options.get('bg_image') is None and _NATIVE is not None:
         font = _find_font_path()
         if font:
             try:
@@ -252,7 +298,8 @@ def _render_text_image(text, width=500, padding=20, options=None):
 
 def _render_list_image(title, items, width=600, padding=30, options=None):
     """渲染榜单/列表图片。原生可用返回 PNG bytes，否则返回 PIL Image"""
-    if _NATIVE is not None:
+    options = options or {}
+    if options.get('bg_image') is None and _NATIVE is not None:
         font = _find_font_path()
         if font:
             try:
@@ -311,23 +358,27 @@ def _render_card_image_pil(title, content, width=600, padding=30, options=None):
     img = Image.new("RGBA", (width, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # 背景：渐变 / 纯色 / 默认
+    # 背景：图片（可模糊）/ 渐变 / 纯色 / 默认
+    bg_img = _load_bg_image(width, total_h, options)
+    if bg_img is not None:
+        img.alpha_composite(bg_img)
     gradient = None
-    if bg_gradient:
-        top = _parse_color(bg_gradient[0], (248, 250, 255, 255))
-        bottom = _parse_color(bg_gradient[1], (255, 255, 245, 255))
-        gradient = (top, bottom)
-    elif bg_color is None:
-        gradient = ((248, 250, 255, 255), (255, 255, 245, 255))
-    if gradient:
-        top, bottom = gradient
-        for y in range(total_h):
-            draw.line([(0, y), (width, y)], fill=_gradient_row(top, bottom, y, total_h))
-    else:
-        if radius > 0:
-            draw.rounded_rectangle([0, 0, width - 1, total_h - 1], radius=radius, fill=bg_color)
+    if bg_img is None:
+        if bg_gradient:
+            top = _parse_color(bg_gradient[0], (248, 250, 255, 255))
+            bottom = _parse_color(bg_gradient[1], (255, 255, 245, 255))
+            gradient = (top, bottom)
+        elif bg_color is None:
+            gradient = ((248, 250, 255, 255), (255, 255, 245, 255))
+        if gradient:
+            top, bottom = gradient
+            for y in range(total_h):
+                draw.line([(0, y), (width, y)], fill=_gradient_row(top, bottom, y, total_h))
         else:
-            draw.rectangle([0, 0, width - 1, total_h - 1], fill=bg_color)
+            if radius > 0:
+                draw.rounded_rectangle([0, 0, width - 1, total_h - 1], radius=radius, fill=bg_color)
+            else:
+                draw.rectangle([0, 0, width - 1, total_h - 1], fill=bg_color)
 
     # 边框
     if border_color:
@@ -414,9 +465,13 @@ def _render_text_image_pil(text, width=500, padding=20, options=None):
     img = Image.new("RGBA", (width, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # 背景：渐变 / 纯色
+    # 背景：图片（可模糊）/ 渐变 / 纯色
+    bg_img = _load_bg_image(width, total_h, options)
     gradient = False
-    if bg_gradient:
+    if bg_img is not None:
+        img.alpha_composite(bg_img)
+        gradient = True   # 铺满整幅，圆角裁剪照常生效
+    elif bg_gradient:
         top = _parse_color(bg_gradient[0], bg_color)
         bottom = _parse_color(bg_gradient[1], bg_color)
         for y in range(total_h):
@@ -494,9 +549,13 @@ def _render_list_image_pil(title, items, width=600, padding=30, options=None):
     img = Image.new("RGBA", (width, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # 背景：渐变 / 纯色 / 默认渐变
+    # 背景：图片（可模糊）/ 渐变 / 纯色 / 默认渐变
+    bg_img = _load_bg_image(width, total_h, options)
     gradient = False
-    if bg_gradient:
+    if bg_img is not None:
+        img.alpha_composite(bg_img)
+        gradient = True
+    elif bg_gradient:
         top = _parse_color(bg_gradient[0], (248, 250, 255, 255))
         bottom = _parse_color(bg_gradient[1], (255, 255, 245, 255))
         for y in range(total_h):
