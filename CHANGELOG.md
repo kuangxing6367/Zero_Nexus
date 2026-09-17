@@ -9,6 +9,13 @@
 
 ## 开发中
 
+### 配置
+
+- 环境变量展开补全：`extensions.yaml` 合并进主 config 时同样执行
+  `${VAR}` / `${VAR:-default}` 展开（此前只有 config.yaml 展开，扩展段密钥
+  如 `onebot.access_token` 写变量会被未展开的明文覆盖）；回写 yaml 保留
+  `${VAR}` 引用，不把展开后的明文落盘。
+
 ### zkg 包管理
 
 - 依赖解析接入用户插件：`software/plugins/<pkg>/manifest.toml` 的 `dependencies`

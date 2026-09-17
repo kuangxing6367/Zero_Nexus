@@ -295,6 +295,8 @@ def _autoload_extensions(config: dict) -> dict:
                 data = yaml.safe_load(f) or {}
         except Exception as e:
             _get_logger().warning(f"读取 extensions.yaml 失败: {e}")
+    if not isinstance(data, dict):
+        data = {}
     # 向后兼容：旧配置/旧 yaml 键 core_plugins 仍可被识别（新键 extensions 优先）
     cps = data.get('extensions') if isinstance(data, dict) else None
     if not isinstance(cps, dict) and isinstance(data, dict):
@@ -333,7 +335,7 @@ def _autoload_extensions(config: dict) -> dict:
             del cps[name]
             changed = True
 
-    # 4. 回写 yaml（自动更新）
+    # 4. 回写 yaml（自动更新；cps 保持原文，${VAR} 引用不会被展开落盘）
     if changed:
         try:
             with open(yaml_path, 'w', encoding='utf-8') as f:
@@ -343,13 +345,16 @@ def _autoload_extensions(config: dict) -> dict:
         except Exception as e:
             _get_logger().warning(f"同步 extensions.yaml 失败: {e}")
 
-    # 5. 合并进主 config：enabled → extensions 段；配置块 → 对应 section
+    # 5. 合并进主 config：enabled → extensions 段；配置块 → 对应 section。
+    #    合并时做环境变量展开（${VAR} / ${VAR:-default}）：不展开的话，
+    #    yaml 未展开的明文会覆盖 config.yaml 里已展开的密钥（如 access_token）。
     core_cfg = {}
     for name, blk in cps.items():
         if not isinstance(blk, dict):
             continue
         section = _EXTENSION_SECTION.get(name, name)
         cur = config.get(section)
+        blk = _env_replace(blk)
         if isinstance(cur, dict):
             merged = dict(cur)
             merged.update(blk)

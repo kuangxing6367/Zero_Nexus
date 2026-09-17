@@ -89,13 +89,14 @@ def test_multi_scan_root_dedupe():
     plugins = os.path.join(tmp, "plugins")
     _write_plugin(plugins, "myapp", '["store"]')
 
-    ld = Loader(ROOT, tmp, sources_cfg=_local_sources(src),
-                scan_roots=[plugins])
+    ld = Loader(os.path.join(ROOT, "repo"), tmp,
+                sources_cfg=_local_sources(src),
+                scan_roots=[plugins, os.path.join(ROOT, "software", "plugins")])
     out = ld.run()
-    # 主根=整个项目（含 repo 5 工具包与真实 software/plugins 插件）+ 1 个临时插件
+    # 主根=repo/（生产接线同款：startup 用 repo/ 而非项目根，避免扫进 data/ 运行时目录）
     from service.zkg import scanner as _scanner
-    n_main = len(_scanner.scan_dir(ROOT))
-    assert out["plugin_count"] == n_main + 1
+    n_main = len(_scanner.scan_dir(os.path.join(ROOT, "repo")))
+    assert out["plugin_count"] == n_main + 2
     assert out["loaded_tools"] == ["store"]
     # demo_kv（真实插件）与 myapp（临时插件）都依赖 store
     assert set(ld.depdb.tool_dependents("store")) >= {"demo_kv", "myapp"}
