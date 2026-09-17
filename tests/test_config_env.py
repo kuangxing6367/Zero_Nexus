@@ -5,7 +5,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, "E:/工程/zernus")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from core.config import _env_replace, load_config

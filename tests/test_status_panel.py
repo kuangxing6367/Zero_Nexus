@@ -2,12 +2,13 @@
 """status_panel 扩展冒烟：真实起 HTTP 服务，验证 /health、/、404 与启停。"""
 import io
 import json
+import os
 import sys
 import time
 import types
 import urllib.request
 
-sys.path.insert(0, "E:/工程/zernus")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import importlib

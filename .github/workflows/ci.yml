@@ -34,6 +34,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyyaml flask flask-cors waitress websockets requests
 
+      # zkg 官方源索引与包池是构建产物（repo/dist、repo/pool 不入库），
+      # 部分测试依赖其存在，先构建一次。
+      - name: Build zkg repo index
+        run: python repo/build.py
+
       # 测试是脚本式（文件顶层 sys.exit），不能用 unittest discover，逐个执行。
       - name: Run tests (one by one)
         shell: bash

@@ -6,8 +6,13 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import software.extensions.webui.graphql as g
-from software.extensions.webui.graphql import graphql_sync, schema
+# ariadne 是可选依赖（CI 有意不装，验证缺依赖时优雅跳过）
+try:
+    import software.extensions.webui.graphql as g
+    from software.extensions.webui.graphql import graphql_sync, schema
+except ImportError as e:
+    print(f"SKIP - ariadne 未安装（可选依赖）: {e}")
+    sys.exit(0)
 
 
 class FakePluginLoader:
