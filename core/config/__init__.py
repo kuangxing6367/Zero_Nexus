@@ -247,6 +247,8 @@ _EXTENSION_SCHEMA = {
     'http_inject': {'enabled': False, 'host': '127.0.0.1', 'port': 8901,
                     'path': '/hook', 'token': ''},
     'image_renderer': {'enabled': True},
+    'node_manager': {'enabled': False, 'interval': 30, 'timeout': 5,
+                     'nodes': []},
 }
 
 

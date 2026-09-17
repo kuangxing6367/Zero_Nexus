@@ -9,6 +9,35 @@
 
 ## 开发中
 
+### 多机管理（L1）
+
+- 新增官方扩展 `software/extensions/node_manager/`：星型拓扑中心侧只读监控聚合，
+  主动轮询各节点 `status_panel /health`，写入 `nodes` 表（心跳 `updated_at`），
+  状态翻转打日志；`fw.services.get('node_manager')` 提供 `poll_now()` / `snapshot()`。
+  默认关闭（仅 hub 开启），零新协议、不反向连接节点。
+- 新增测试 `tests/test_node_manager.py`（10 项：表读写 / up/down 判定 /
+  心跳落库 / 状态翻转 / enabled=false）。
+
+### zkg 包管理
+
+- 包签名（HMAC-SHA256）：`repo/build.py` 在设置 `ZKG_SIGNING_KEY`（或
+  `--key-file`）时对每个包体计算 HMAC 写入索引 `signature` 字段；加载端
+  校验通过才加载，带签名而本机无密钥 → 拒绝（fail closed），密钥不匹配 → 拒绝。
+  sha256 防传输损坏，HMAC 防索引+包体同被替换的供应链替换。
+- 端到端演示包：`repo/cron`（cron 表达式解析/匹配/next_run，纯 stdlib 机制包）
+  + 演示插件 `software/plugins/demo_cron/`（声明依赖并经 `ctx.zkg_tool('cron')`
+  消费），覆盖「依赖声明 → 源安装 → 校验 → 加载 → 使用」完整链路。
+- 新增测试 `tests/test_pkg_signature.py`（7 项：打包签名 / 篡改拒绝 /
+  缺钥拒绝 / 无依赖不加载）与 `tests/test_cron_pkg.py`（19 项）。
+- 发布链路文档 `docs/zkg-publish.md`：开发 → 打包 → 签名 → 发布（动服务器需
+  人工确认）→ 安装 → 升级，含「只增不删 / 先 pool 后 index / 密钥不上服务器」约定。
+
+### 部署
+
+- 官方部署产物：`deploy/Dockerfile`（数据全落 /app/data 卷）、
+  `deploy/zernus.service`（systemd 单元，含读写路径加固）与 `deploy/README.md`；
+  `docs/deployment.md` 指向官方产物并补多机管理（L1）章节。
+
 ### 配置
 
 - 环境变量展开补全：`extensions.yaml` 合并进主 config 时同样执行
