@@ -41,3 +41,27 @@ node_manager:
 各被纳管节点只需开 `status_panel`（默认开，建议绑定内网地址）。hub 每 30s
 轮询一次 `/health`，写入 `nodes` 表（心跳 `updated_at`），状态翻转时打日志。
 进程内：`fw.services.get('node_manager').snapshot()` 读聚合快照。
+
+## 多机管理（L2）控制通道
+
+需要向节点下发命令时，hub 加开 `node_control`（监听 37010），节点加开
+`node_agent`（主动外连 hub，NAT 后亦可）：
+
+```yaml
+# hub 侧
+node_control:
+  enabled: true
+  nodes:
+    - {name: node-1, secret: change-me-node-1}
+
+# 节点侧
+node_agent:
+  enabled: true
+  hub_host: <hub-ip>
+  name: node-1
+  secret: change-me-node-1
+  allow_shell: false
+```
+
+命令白名单 `ping` / `health` / `shell`（shell 需节点显式开启）。用法详见
+[docs/deployment.md](../docs/deployment.md) 多机管理（L2）章节。

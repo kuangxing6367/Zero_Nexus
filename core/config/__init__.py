@@ -249,6 +249,10 @@ _EXTENSION_SCHEMA = {
     'image_renderer': {'enabled': True},
     'node_manager': {'enabled': False, 'interval': 30, 'timeout': 5,
                      'nodes': []},
+    'node_control': {'enabled': False, 'host': '0.0.0.0', 'port': 37010,
+                     'nodes': []},
+    'node_agent': {'enabled': False, 'hub_host': '127.0.0.1', 'hub_port': 37010,
+                   'name': '', 'secret': '', 'interval': 30, 'allow_shell': False},
 }
 
 

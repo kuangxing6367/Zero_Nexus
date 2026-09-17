@@ -22,9 +22,9 @@
 - [x] 完整性校验：加载器拉包后校验索引 sha256，不一致拒绝加载（2026-09-16）。
 - [x] 生产接线：`software/plugins/` 用户插件的 `dependencies` 纳入 zkg 依赖解析，
       插件声明即可触发机制包按需加载（2026-09-16）。
-- [ ] 端到端演示包：把现有官方扩展之一（候选：`scheduler`，纯逻辑、零前端）改造为 zkg 包，从官方源安装后可正常工作。
-- [ ] 发布链路：「开发 → 打包 → 发布（zkg.zgric.top）→ 安装 → 升级」写成文档（发布动服务器前先确认）。
-- [ ] 包签名：密钥级签名校验（当前为 SHA-256 完整性校验）。
+- [x] 端到端演示包：`repo/cron` 机制包 + `demo_cron` 插件（依赖声明 → 源安装 → 校验 → 加载 → ctx.zkg_tool 消费，2026-09-17）。
+- [x] 发布链路：`docs/zkg-publish.md`「开发 → 打包 → 签名 → 发布 → 安装 → 升级」（上传服务器一步需人工确认，2026-09-17）。
+- [x] 包签名：HMAC-SHA256（`ZKG_SIGNING_KEY` / `--key-file` 签名入索引，loader 缺钥或不匹配拒绝加载，2026-09-17）。
 
 ### 2. 插件开发者路径
 - [x] `zkg new <name>` 脚手架：`python -m service.zkg new <name> [--deps store,ws]`，
@@ -65,11 +65,12 @@
 核心决策：**星型拓扑，节点主动外连中心（hub）**——节点可在 NAT 后，无需公网；
 复用 `service/transport/framed.py`（整帧 HMAC、防重放、超时都已加固）做控制面传输。
 
-- [ ] **L1 监控聚合（只读，先行）**：中心加 `node_manager` 扩展，轮询各节点已开放的
-      `status_panel /health`，聚合展示 + 存 `nodes` 表（心跳 updated_at）；零新协议，1-2 天可落地。
-- [ ] **L2 控制通道**：节点跑轻量 agent（`FramedClient` 主动连 hub 的 `FramedServer`），
-      定义帧类型：注册握手 / 心跳 / 状态上报 / 命令下发（exec/task/zkg 装包）；
-      鉴权用预共享 per-node secret（framed 已支持按连接传密钥），`security.rsa_callback` 留有升级位。
+- [x] **L1 监控聚合（只读，先行）**：`node_manager` 扩展已落地——轮询各节点
+      `status_panel /health`，写 `nodes` 表（心跳 updated_at），默认关闭（2026-09-17）。
+- [x] **L2 控制通道**：hub 侧 `node_control`（监听 TCP）+ 节点侧 `node_agent`
+      （FramedClient 主动连 hub），帧类型：HELLO 握手 / HEARTBEAT 心跳状态 /
+      CMD 命令下发 / RESULT 回执；鉴权用预共享 per-node secret（整帧 HMAC 验签），
+      命令白名单 ping/health/shell（shell 需节点侧 allow_shell 显式开启）（2026-09-17）。
 - [ ] **L3 编排**：经控制通道做包分发（zkg 源已有）、配置下发、灰度升级、节点分组。
 - 原则：L1 没跑稳不碰 L2；hub 不主动反向连接节点（保持出站单向，网络要求最低）。
 

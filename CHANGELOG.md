@@ -9,6 +9,22 @@
 
 ## 开发中
 
+### 多机管理（L2 控制通道）
+
+- 新增官方扩展 `software/extensions/node_control/`（hub 侧）：监听 TCP 接受节点
+  主动外连，per-node 预共享密钥验签（HELLO 帧载荷携带节点名，伪造无法通过
+  整帧 HMAC）；心跳/状态聚合进内存快照，命令下发/回执经同一长连接；
+  `fw.services.get('node_control')` 提供 `snapshot()` / `send_cmd(node, cmd, args, timeout)`
+  （线程安全，内部投递到 asyncio 循环）。默认关闭（仅 hub 开启）。
+- 新增官方扩展 `software/extensions/node_agent/`（节点侧）：主动外连 hub
+  （节点可在 NAT 后），断线指数退避重连；周期心跳（状态同 status_panel /health
+  结构）；命令白名单执行——`ping` / `health` 恒可用，`shell` 需节点侧
+  `allow_shell: true` 显式开启（默认禁）。默认关闭（仅被管节点开启）。
+- 配置项并入 `extensions.yaml` 与 core/config 内置模板；新增测试
+  `tests/test_node_control.py`（9 项：握手验签 / 未知密钥拒绝 / 心跳 /
+  命令回执 / 离线节点）与 `tests/test_node_agent.py`（5 项端到端：接入 /
+  ping / health / shell 禁用 / 未知命令）。
+
 ### 多机管理（L1）
 
 - 新增官方扩展 `software/extensions/node_manager/`：星型拓扑中心侧只读监控聚合，

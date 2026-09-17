@@ -94,5 +94,41 @@ node_manager:
       url: http://192.168.1.10:8090
 ```
 
-星型拓扑、节点无需公网（hub 不反向连接）；L2 控制通道 / L3 编排见
-[roadmap.md](roadmap.md) 多机管理章节。
+星型拓扑、节点无需公网（hub 不反向连接）。
+
+## 多机管理（L2 控制通道）
+
+L1 只读监控之上，可加控制通道：hub 开 `node_control`（监听 TCP），节点开
+`node_agent`（主动外连 hub，节点可在 NAT 后）。传输复用 framed 协议
+（整帧 HMAC、防重放），鉴权为 per-node 预共享密钥：
+
+```yaml
+# hub 侧
+node_control:
+  enabled: true
+  host: 0.0.0.0
+  port: 37010
+  nodes:
+    - name: node-1
+      secret: change-me-node-1     # 务必换成强随机值
+
+# 节点侧
+node_agent:
+  enabled: true
+  hub_host: 10.0.0.1
+  hub_port: 37010
+  name: node-1
+  secret: change-me-node-1
+  allow_shell: false               # shell 命令安全开关，默认禁
+```
+
+命令白名单：`ping` / `health` 恒可用，`shell` 需节点侧显式 `allow_shell: true`。
+进程内调用（hub 上任意线程）：
+
+```python
+ctrl = fw.services.get('node_control')
+ctrl.snapshot()                                   # 在线节点快照
+ctrl.send_cmd('node-1', 'health', {}, timeout=10) # {'ok': True, 'data': ...}
+```
+
+L3 编排（包分发、配置下发、灰度升级）见 [roadmap.md](roadmap.md) 多机管理章节。
