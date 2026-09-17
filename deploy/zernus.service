@@ -1,0 +1,30 @@
+# ============================================================
+# Zeronus systemd 服务单元（Linux 自托管）
+# 安装：
+#   1. 仓库放在 /opt/zernus（或改下方 WorkingDirectory）
+#   2. cp deploy/zernus.service /etc/systemd/system/
+#   3. systemctl daemon-reload && systemctl enable --now zernus
+# 查看日志：journalctl -u zernus -f
+# ============================================================
+[Unit]
+Description=Zeronus (Zero Nexus) software host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 建议使用专用低权限用户：
+#   useradd -r -s /usr/sbin/nologin zernus && chown -R zernus /opt/zernus
+User=root
+WorkingDirectory=/opt/zernus
+ExecStart=/usr/bin/python3 /opt/zernus/main.py
+Restart=on-failure
+RestartSec=5
+
+# 加固：只写项目目录内的 data/
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/zernus/data
+
+[Install]
+WantedBy=multi-user.target

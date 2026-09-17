@@ -1,5 +1,8 @@
 # 部署上线
 
+仓库 `deploy/` 目录提供官方部署产物：`deploy/Dockerfile`、`deploy/zernus.service`，
+用法与多机管理见 [deploy/README.md](../deploy/README.md)。
+
 ## 进程管理（systemd）
 
 ```ini
@@ -76,3 +79,20 @@ server {
 - 优先用反向代理 + TLS 终止，框架不直连公网。
 - `http_api` / `http_inject` 调试用扩展默认关闭，生产环境保持关闭或限制来源。
 - 数据库按需选 MySQL / PostgreSQL，并定期备份 `data/zernus.db` 或对应库。
+
+## 多机管理（L1 监控聚合）
+
+中心机（hub）在 `extensions.yaml` 开启 `node_manager`，轮询各节点的
+`status_panel /health`（节点默认开启、绑定内网地址即可），写入 `nodes` 表：
+
+```yaml
+node_manager:
+  enabled: true
+  interval: 30
+  nodes:
+    - name: node-1
+      url: http://192.168.1.10:8090
+```
+
+星型拓扑、节点无需公网（hub 不反向连接）；L2 控制通道 / L3 编排见
+[roadmap.md](roadmap.md) 多机管理章节。

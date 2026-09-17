@@ -44,7 +44,9 @@
 
 ### 4. 工程信任基础
 - [x] GitHub Actions CI：Python 3.11/3.13 × Ubuntu/Windows，逐个执行脚本式测试（2026-09-17）。
-- [ ] Dockerfile + systemd unit 示例，「自托管」定位闭环。
+- [x] Dockerfile + systemd unit 示例，「自托管」定位闭环：
+      `deploy/Dockerfile`、`deploy/zernus.service`、`deploy/README.md`，
+      docs/deployment.md 已指向官方产物（2026-09-17）。
 - [x] 只读 status 端点：`/health` 已随状态面板扩展落地（版本 / 内存 / 任务队列 / 插件清单，2026-09-17）。
 
 ---
@@ -55,6 +57,21 @@
 - [x] 内核端口 37001 协议说明：如实标注为端口占位 / 探活通道（回 `OK\n`），「状态/事件」协议待定义（README / architecture.md / getting-started.md，2026-09-17）。
 - [x] README 架构段补：数据库令牌桶限速、内核任务队列、路由表事件驱动、PostgreSQL 现状（2026-09-17）。
 - [x] PostgreSQL：README / database.md / requirements.txt 均如实标注「仅方言翻译、连接未实现、回退 SQLite」（2026-09-17）。
+
+---
+
+## 多机管理（设计定稿 2026-09-17，分三级）
+
+核心决策：**星型拓扑，节点主动外连中心（hub）**——节点可在 NAT 后，无需公网；
+复用 `service/transport/framed.py`（整帧 HMAC、防重放、超时都已加固）做控制面传输。
+
+- [ ] **L1 监控聚合（只读，先行）**：中心加 `node_manager` 扩展，轮询各节点已开放的
+      `status_panel /health`，聚合展示 + 存 `nodes` 表（心跳 updated_at）；零新协议，1-2 天可落地。
+- [ ] **L2 控制通道**：节点跑轻量 agent（`FramedClient` 主动连 hub 的 `FramedServer`），
+      定义帧类型：注册握手 / 心跳 / 状态上报 / 命令下发（exec/task/zkg 装包）；
+      鉴权用预共享 per-node secret（framed 已支持按连接传密钥），`security.rsa_callback` 留有升级位。
+- [ ] **L3 编排**：经控制通道做包分发（zkg 源已有）、配置下发、灰度升级、节点分组。
+- 原则：L1 没跑稳不碰 L2；hub 不主动反向连接节点（保持出站单向，网络要求最低）。
 
 ---
 
