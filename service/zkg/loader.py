@@ -109,6 +109,21 @@ class Loader:
                     f"实际 {actual[:16]}…），已拒绝加载。包体可能被篡改或损坏。"
                 )
                 return None
+        # 签名校验（可选）：索引条目带 signature 时，加载端必须提供同一密钥
+        # （环境变量 ZKG_SIGNING_KEY）。带签名而本地无密钥 → 拒绝（fail closed）。
+        sig = str(mani.get("signature") or "").strip().lower()
+        if sig:
+            key = os.environ.get("ZKG_SIGNING_KEY", "")
+            if not key:
+                logger.error(
+                    f"[loader] 包 {tid} 源声明了 HMAC 签名，但本机未设置 "
+                    f"ZKG_SIGNING_KEY，无法验证，已拒绝加载。")
+                return None
+            if self._hmac_file(key.encode("utf-8"), local_file) != sig:
+                logger.error(
+                    f"[loader] 包 {tid} 签名校验失败（密钥不匹配或包体被篡改），"
+                    f"已拒绝加载。")
+                return None
         extract = os.path.join(cache_dir, "extracted")
         os.makedirs(extract, exist_ok=True)
         with tarfile.open(local_file) as tf:
@@ -123,6 +138,16 @@ class Loader:
     def _sha256_file(path: str) -> str:
         import hashlib
         h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    @staticmethod
+    def _hmac_file(key: bytes, path: str) -> str:
+        import hashlib
+        import hmac
+        h = hmac.new(key, digestmod=hashlib.sha256)
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)

@@ -190,6 +190,7 @@ SQLite 与 MySQL 的查询 API 一致（`query` / `query_one` / `execute` / `ins
 | 架构详解 | [docs/architecture.md](docs/architecture.md) |
 | 数据库 | [docs/database.md](docs/database.md) |
 | 包管理 zkg | [docs/zkg.md](docs/zkg.md) |
+| zkg 发布与签名 | [docs/zkg-publish.md](docs/zkg-publish.md) |
 | 编写插件 | [docs/writing-plugins.md](docs/writing-plugins.md) |
 | 定时任务 | [docs/scheduler.md](docs/scheduler.md) |
 | 权限系统 | [docs/permission.md](docs/permission.md) |

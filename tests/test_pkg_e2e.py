@@ -96,7 +96,8 @@ def test_multi_scan_root_dedupe():
     # 主根=repo/（生产接线同款：startup 用 repo/ 而非项目根，避免扫进 data/ 运行时目录）
     from service.zkg import scanner as _scanner
     n_main = len(_scanner.scan_dir(os.path.join(ROOT, "repo")))
-    assert out["plugin_count"] == n_main + 2
+    n_plugins = len(_scanner.scan_dir(os.path.join(ROOT, "software", "plugins")))
+    assert out["plugin_count"] == n_main + 1 + n_plugins   # +1 = 临时插件 myapp
     assert out["loaded_tools"] == ["store"]
     # demo_kv（真实插件）与 myapp（临时插件）都依赖 store
     assert set(ld.depdb.tool_dependents("store")) >= {"demo_kv", "myapp"}

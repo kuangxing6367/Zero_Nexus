@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import tarfile
@@ -27,6 +28,28 @@ except ImportError:  # 兼容 3.10
     import tomli as tomllib  # type: ignore
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _signing_key() -> bytes:
+    """取签名密钥：优先环境变量 ZKG_SIGNING_KEY，其次 --key-file 文件内容。"""
+    import sys
+    key = os.environ.get("ZKG_SIGNING_KEY", "")
+    if key:
+        return key.encode("utf-8")
+    if "--key-file" in sys.argv:
+        path = sys.argv[sys.argv.index("--key-file") + 1]
+        with open(path, "rb") as f:
+            return f.read().strip()
+    return b""
+
+
+def _hmac_sign(key: bytes, path: str) -> str:
+    """对包体整文件做 HMAC-SHA256，返回 hex 签名。"""
+    h = hmac.new(key, digestmod=hashlib.sha256)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _sha256(path: str) -> str:
@@ -79,6 +102,10 @@ def _build_package_list() -> list:
             "url": f"pool/{arcname}.tar.gz",   # 下载地址（相对源根）
             "sha256": _sha256(tar_path),
         })
+        # 可选 HMAC 签名：ZKG_SIGNING_KEY / --key-file 提供密钥时自动附加
+        key = _signing_key()
+        if key:
+            packages[-1]["signature"] = _hmac_sign(key, tar_path)
     return packages
 
 

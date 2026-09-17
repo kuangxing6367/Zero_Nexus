@@ -23,6 +23,7 @@ software/extensions/webui/frontend/vite.config.js.timestamp-*
 software/plugins/*
 !software/plugins/__init__.py
 !software/plugins/demo_kv/
+!software/plugins/demo_cron/
 
 # 软件级：官方扩展的原生构建产物（Rust/C 扩展编译输出）
 software/extensions/*/native/target/

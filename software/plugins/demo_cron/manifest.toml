@@ -1,0 +1,12 @@
+# demo_cron —— 端到端演示插件：声明依赖 zkg 官方机制包 cron
+# 链路：manifest 声明 dependencies=["cron"] → zkg 解析 → 从源安装 → ctx.zkg_tool 使用
+[package]
+id = "demo_cron"
+name = "Demo Cron"
+type = "plugin"
+version = "1.0.0"
+description = "演示插件：通过 zkg 依赖解析消费 cron 机制包"
+dependencies = ["cron"]
+provides = ["demo_cron"]
+entry = "main.py"
+api_version = ">=1"

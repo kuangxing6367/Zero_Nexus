@@ -86,3 +86,8 @@ KV 的最小完整插件，可作为第一个练手参照。
 - 用户业务插件放在 `software/plugins/`，由插件加载器按 `register(ctx)` 入口加载（见 [writing-plugins.md](writing-plugins.md)、[loader.md](loader.md)）；
 - 插件在 `manifest.toml` 的 `dependencies` 声明所需机制包，运行时经
   `ctx.zkg_tool("<id>")` 取用（未声明/未加载返回 `None`）。
+
+## 发布与签名
+
+从开发到官方源发布（打包 → HMAC 签名 → 上传 → 安装 → 升级）的完整流程见
+[zkg-publish.md](zkg-publish.md)。注意：上传服务器一步需人工确认后执行。
