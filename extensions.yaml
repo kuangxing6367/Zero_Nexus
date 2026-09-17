@@ -14,6 +14,10 @@ extensions:
     enabled: true
     host: 127.0.0.1
     port: 8080
+  status_panel:
+    enabled: true
+    host: 127.0.0.1
+    port: 8090
   session:
     enabled: true
   scheduler:

@@ -29,12 +29,15 @@
 
 ### 内核级（`core/`）
 - 维护服务级与软件级的活动（生命周期、注册、注销、状态检索：内存 / CPU 占用）。
-- 与数据库交互：**SQLite / MySQL / PostgreSQL** 三方言抽象。
-- 提供底层 Hook（`core/hooks`）、日志（`core/log_broker`）、事件总线（`core/kernel/event_bus.py`，唯一实现，`core/messaging/event_bus.py` 透明重导出）。
+- 与数据库交互：SQLite / MySQL 双实现 + **令牌桶限速**（`database.rate_limit_qps`，默认不限速）；PostgreSQL 仅有 SQL 方言翻译，**连接未实现**（配置 `type: postgresql` 会回退 SQLite）。
+- 提供底层 Hook（`core/hooks`，28 个扩展点含 `db.*` 与 `session/cron` 分组）、日志（`core/log_broker`）、事件总线（`core/kernel/event_bus.py`，唯一实现，`core/messaging/event_bus.py` 透明重导出）。
+- **内核任务队列**（`core/kernel/task_queue.py`）：N 个 worker 线程执行 sync/async 任务，FIFO + 有界历史，core/service/software 均可提交。
+- **路由表事件驱动**：命令路由变更即时重建，兜底周期由 `messaging.route_refresh_interval` 控制（默认 60s）。
 - 权限系统（`core/perm`，LuckPerms 风格）、认证（`core/auth`）、协议抽象（`core/adapters/protocol.py`）。
 
 ### 服务级（`service/`）
-- **zkg 包管理**（`service/zkg`）：官方包仓库 + 本地 `repo/`，扫描依赖、只加载被依赖的机制包。
+- 定位是**框架自带的系统服务库**（与内核同进程运行，不是独立进程/独立机器）：
+- **zkg 包管理**（`service/zkg`）：本地 `repo/` + 官方源（`zkg.zgric.top`，默认不主动连接），依赖驱动、只加载被依赖的机制包；拉包校验 sha256；`zkg new` 脚手架。
 - 框架基础服务：`sys` 服务 / `user` 服务拉起（`service/startup.py`）、内存看门狗（`service/watchdog.py`）。
 - **通用安全传输原语**（`service/transport`）：认证 TCP 帧，见下文「安全传输」。
 
@@ -75,9 +78,10 @@ python main.py
 
 - 首次启动自动建表（`data/zernus.db`，SQLite）并自愈缺失依赖。
 - 启动后端口（均默认 `127.0.0.1`）：
-  - 内核 `37001`（状态 / 事件通道）
-  - `sys` 服务 `38001`、`user` 服务 `38002`
+  - 内核 `37001`：目前是**端口占位 / 探活通道**——TCP 连接后发送任意 ≤256 字节，服务端回 `OK\n` 即断开；「状态 / 事件」协议尚未定义（见 `docs/roadmap.md`）
+  - `sys` 服务 `38001`、`user` 服务 `38002`：同为探活通道
   - Web 管理后台 `8080`（由 `software/extensions/webui` 提供）
+  - 状态面板 `8090`（`status_panel` 扩展：Web 状态页 + 只读 `/health` JSON）
 - Web 后台默认账号 **`admin` / `admin123`**（首次登录请修改密码）。
 - 不需要 IM 接入端也能跑：在 `extensions.yaml` 开启 `http_inject`，用一条 `curl` 注入事件即可调试。
 

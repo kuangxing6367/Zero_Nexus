@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+        os: [ubuntu-latest, windows-latest]
+
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # 内核仅硬依赖 PyYAML；这里装测试会用到的最小集。
+      # 可选依赖（psutil/ariadne 等）不装——对应测试应自动 SKIP，这正是要验证的行为。
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml flask flask-cors waitress websockets requests
+
+      # 测试是脚本式（文件顶层 sys.exit），不能用 unittest discover，逐个执行。
+      - name: Run tests (one by one)
+        shell: bash
+        run: |
+          fail=0
+          for t in tests/test_*.py; do
+            echo "===== $t ====="
+            python "$t" || fail=1
+          done
+          exit $fail

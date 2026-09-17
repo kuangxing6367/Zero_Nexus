@@ -30,6 +30,22 @@
 - 新增测试 `tests/test_zkg_tools.py`（5 项：本地 HTTP 往返 / 重试语义 /
   锁互斥与重入 / 校验清洗 / 全链路加载）。
 
+### 官方扩展
+
+- 新增 **状态面板**（`software/extensions/status_panel`，默认开启，`127.0.0.1:8090`）：
+  第一个与 IM 无关的官方扩展——Web 暗色状态页 `/`（5s 自动刷新）+ 只读 JSON 探活端点
+  `/health`（版本 / 运行时长 / 内存 / 任务队列 / 扩展与插件清单 / zkg 工具），纯标准库。
+
+### 工程与文档
+
+- 新增 GitHub Actions CI（`.github/workflows/ci.yml`）：Python 3.11 / 3.13 ×
+  Ubuntu / Windows 矩阵，逐个执行脚本式测试（不可 `unittest discover`）。
+- `docs/writing-plugins.md` 新增「从 0 到 1」实战教程（基于 demo_kv）。
+- 表述修正：service 层明确为「框架自带系统服务库」（同进程，非独立进程）；
+  内核 37001 / sys / user 端口如实标注为端口占位 / 探活通道（回 `OK\n`）；
+  README 架构段补任务队列 / 数据库限速 / 路由表事件驱动；requirements.txt
+  去掉「框架自动安装 DB 驱动」的过时说法。
+
 ---
 
 ## v0.0.1-alpha.0

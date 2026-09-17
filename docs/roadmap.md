@@ -32,28 +32,29 @@
 - [x] 机制包消费路径：`ctx.zkg_tool(name)` 访问器 + `demo_kv` 演示插件（2026-09-16）。
 - [x] ctx 插件 API 版本承诺：`core/ctx.PLUGIN_API_VERSION` + `ctx.api_version` +
       manifest `api_version` 兼容区间声明，zkg 加载器启动校验（2026-09-16）。
-- [ ] 一个用户插件从 0 到 1 的完整教程（对应 `docs/writing-plugins.md` 补练手章节，可基于 demo_kv）。
+- [x] 从 0 到 1 完整教程：`docs/writing-plugins.md` 实战章节（基于 demo_kv，含运行验证与常见坑，2026-09-17）。
 
 ---
 
 ## P1 — 证明「宿主」定位
 
 ### 3. 非 IM 官方扩展示例
-- [ ] 至少一个与 IM 无关的官方软件级扩展（候选：定时备份宿主 / Webhook 转发器 / 轻量状态面板），证明宿主不挑业务。
+- [x] 轻量状态面板（`software/extensions/status_panel`）：只读 `/health` JSON + Web 状态页，
+      纯标准库、默认开启、绑定 127.0.0.1（2026-09-17）。
 
 ### 4. 工程信任基础
-- [ ] GitHub Actions CI：接入现有 12 个测试脚本（注意脚本式测试不能 `unittest discover`，需逐个执行）。
+- [x] GitHub Actions CI：Python 3.11/3.13 × Ubuntu/Windows，逐个执行脚本式测试（2026-09-17）。
 - [ ] Dockerfile + systemd unit 示例，「自托管」定位闭环。
-- [ ] 只读 status 端点：内核状态（内存 / CPU / 任务队列）已有数据源，暴露为 `/health` 类接口。
+- [x] 只读 status 端点：`/health` 已随状态面板扩展落地（版本 / 内存 / 任务队列 / 插件清单，2026-09-17）。
 
 ---
 
 ## P2 — 表述与边界修正
 
-- [ ] service 层定位表述：实际是「框架自带系统服务库」，非独立进程；架构图不要承诺做不到的拆分。
-- [ ] 内核端口 37001 协议定义（当前「状态 / 事件通道」无协议文档，外部工具无法接入）。
-- [ ] README 架构段补：数据库限速、内核任务队列、路由表事件驱动（已落地未写入）。
-- [ ] PostgreSQL：明确标注「仅方言翻译、连接未实现」后，评估是补实现还是从 roadmap 降级移除。
+- [x] service 层定位表述：明确为「框架自带的系统服务库」，与内核同进程，非独立进程（README / architecture.md，2026-09-17）。
+- [x] 内核端口 37001 协议说明：如实标注为端口占位 / 探活通道（回 `OK\n`），「状态/事件」协议待定义（README / architecture.md / getting-started.md，2026-09-17）。
+- [x] README 架构段补：数据库令牌桶限速、内核任务队列、路由表事件驱动、PostgreSQL 现状（2026-09-17）。
+- [x] PostgreSQL：README / database.md / requirements.txt 均如实标注「仅方言翻译、连接未实现、回退 SQLite」（2026-09-17）。
 
 ---
 
