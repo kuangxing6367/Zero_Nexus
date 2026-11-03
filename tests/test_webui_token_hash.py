@@ -70,6 +70,7 @@ def build_app():
             token TEXT DEFAULT NULL,
             token_created_at TEXT DEFAULT NULL,
             role TEXT DEFAULT 'admin',
+            must_change_password INTEGER DEFAULT 0,
             is_active INTEGER DEFAULT 1,
             last_login_at TEXT DEFAULT NULL,
             last_login_ip TEXT DEFAULT NULL

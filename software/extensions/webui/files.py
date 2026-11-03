@@ -94,9 +94,9 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': str(e)}), 500
 
     @app.route('/api/files/read', methods=['GET'])
-    @require_auth
+    @require_super
     def file_browser_read():
-        """读取文件内容"""
+        """读取文件内容（可读 config.yaml 等敏感文件，仅超级管理员）"""
         path = request.args.get('path', '').strip()
         if not path:
             return jsonify({'code': 400, 'msg': '缺少 path'}), 400
@@ -298,7 +298,7 @@ def register(ctx):
         return jsonify({'code': 0, 'msg': f'上传成功 {len(saved)} 个文件', 'saved': saved})
 
     @app.route('/api/files/download', methods=['GET'])
-    @require_auth
+    @require_super
     def file_browser_download():
         """下载文件"""
         path = request.args.get('path', '').strip()

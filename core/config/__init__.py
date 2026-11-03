@@ -106,9 +106,9 @@ extensions:
 
 # ── 软件级：OneBot WebSocket 服务端（扩展 onebot_adapter） ──
 onebot:
-  listen_host: 0.0.0.0
+  listen_host: 127.0.0.1                 # 供外部机器接入时改为 0.0.0.0，并同时设置 access_token
   listen_port: 6830
-  access_token: ""                       # 必须设置！留空则不校验 token
+  access_token: ""                       # 建议设置；非回环监听且留空时接入端拒绝启动
 
 # ── 软件级：Web 管理后台（扩展 webui） ─────────────────────
 web:
@@ -237,7 +237,7 @@ _EXTENSION_SECTION = {'onebot_adapter': 'onebot', 'webui': 'web'}
 # 官方插件默认配置（含 enabled 与主要配置项），自动写入 extensions.yaml。
 # 未列出的已安装插件也会被扫描加入（enabled 按 _default_core_plugin_enabled）。
 _EXTENSION_SCHEMA = {
-    'onebot_adapter': {'enabled': True, 'listen_host': '0.0.0.0',
+    'onebot_adapter': {'enabled': True, 'listen_host': '127.0.0.1',
                        'listen_port': 6830, 'access_token': ''},
     'webui': {'enabled': True, 'host': '127.0.0.1', 'port': 8080},
     'session': {'enabled': True},
@@ -252,7 +252,8 @@ _EXTENSION_SCHEMA = {
     'node_control': {'enabled': False, 'host': '0.0.0.0', 'port': 37010,
                      'nodes': []},
     'node_agent': {'enabled': False, 'hub_host': '127.0.0.1', 'hub_port': 37010,
-                   'name': '', 'secret': '', 'interval': 30, 'allow_shell': False},
+                   'name': '', 'secret': '', 'interval': 30, 'allow_shell': False,
+                   'allow_docker': False},
 }
 
 

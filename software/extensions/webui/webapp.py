@@ -83,13 +83,15 @@ def create_web_app(framework) -> Flask:
         origin = request.headers.get('Origin')
         if not origin:
             return None
-        if _cors_cfg:
-            if isinstance(_cors_cfg, str):
-                allowed = [o.strip() for o in _cors_cfg.split(',') if o.strip()]
-            else:
-                allowed = [str(o).strip() for o in _cors_cfg]
-            return origin if origin in allowed else None
-        return origin
+        if not _cors_cfg:
+            # 未配置白名单 = 不启用跨域：鉴权依赖 Cookie，反射任意 Origin + 
+            # Allow-Credentials 等于放行任意站点携带凭据跨源调用（默认拒绝）
+            return None
+        if isinstance(_cors_cfg, str):
+            allowed = [o.strip() for o in _cors_cfg.split(',') if o.strip()]
+        else:
+            allowed = [str(o).strip() for o in _cors_cfg]
+        return origin if origin in allowed else None
 
     @app.after_request
     def _cors_headers(resp):
@@ -768,12 +770,14 @@ def create_web_app(framework) -> Flask:
             return None
         token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
         row = db.query_one(
-            "SELECT id, username, role, is_active, token_created_at FROM admin_users WHERE token = %s",
+            "SELECT id, username, role, is_active, token_created_at, must_change_password "
+            "FROM admin_users WHERE token = %s",
             (token_hash,)
         )
         if row is None:
             row = db.query_one(
-                "SELECT id, username, role, is_active, token_created_at FROM admin_users WHERE token = %s",
+                "SELECT id, username, role, is_active, token_created_at, must_change_password "
+                "FROM admin_users WHERE token = %s",
                 (token,)
             )
         if row and row['is_active']:
@@ -788,12 +792,28 @@ def create_web_app(framework) -> Flask:
                 expiry = created + timedelta(seconds=timeout)
                 if datetime.now() > expiry:
                     return None
-            return {'id': row['id'], 'username': row['username'], 'role': row['role']}
+            return {'id': row['id'], 'username': row['username'], 'role': row['role'],
+                    'must_change_password': bool(row['must_change_password'])}
         if len(token) >= 40:
+            token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
             row = db.query_one(
                 "SELECT id, name, role, is_active, expires_at, last_used_at FROM api_tokens WHERE token = %s",
-                (token,)
+                (token_hash,)
             )
+            if row is None:
+                # 遗留明文 API Key（升级前入库）：明文比对兼容，命中后就地升级为哈希
+                row = db.query_one(
+                    "SELECT id, name, role, is_active, expires_at, last_used_at FROM api_tokens WHERE token = %s",
+                    (token,)
+                )
+                if row and row['is_active']:
+                    try:
+                        db.execute(
+                            "UPDATE api_tokens SET token = %s WHERE id = %s",
+                            (token_hash, row['id'])
+                        )
+                    except Exception:
+                        pass
             if row and row['is_active']:
                 if row['expires_at']:
                     try:
@@ -824,6 +844,9 @@ def create_web_app(framework) -> Flask:
             secure=bool(request.is_secure),
         )
 
+    # 强制改密账号仅放行的接口（改密 / 退出 / 查看自身信息）
+    _MUST_CHANGE_PWD_ALLOWLIST = {'/api/change_password', '/api/logout', '/api/me'}
+
     def _auth_wrap(fn, super_only=False):
         """鉴权装饰器工厂：校验通过后把 token 同步种到 Cookie（iframe 场景兜底）"""
         @wraps(fn)
@@ -836,6 +859,13 @@ def create_web_app(framework) -> Flask:
                 return jsonify({'code': 401, 'msg': '令牌无效或已过期'}), 401
             if super_only and admin.get('role') != 'super':
                 return jsonify({'code': 403, 'msg': '权限不足，需要超级管理员'}), 403
+            if admin.get('must_change_password') and \
+                    request.path not in _MUST_CHANGE_PWD_ALLOWLIST:
+                return jsonify({
+                    'code': 403,
+                    'msg': '该账号仍在使用默认/重置密码，请先修改密码再执行其他操作',
+                    'data': {'must_change_password': True},
+                }), 403
             request.admin = admin
             result = fn(*args, **kwargs)
             if isinstance(result, tuple):

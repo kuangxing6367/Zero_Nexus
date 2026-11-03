@@ -157,9 +157,9 @@ def register(ctx):
     _YAML_SECTIONS = ('database', 'onebot', 'web', 'ssl', 'plugin', 'log', 'system', 'security')
 
     @app.route('/api/config/yaml', methods=['GET'])
-    @require_auth
+    @require_super
     def get_yaml_config():
-        """读取 config.yaml 全量配置"""
+        """读取 config.yaml 全量配置（含数据库口令/各扩展密钥，仅超级管理员）"""
         path = _yaml_config_path()
         if not os.path.isfile(path):
             return jsonify({'code': 404, 'msg': 'config.yaml 不存在'}), 404

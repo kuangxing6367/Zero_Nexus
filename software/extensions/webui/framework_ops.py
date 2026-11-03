@@ -24,6 +24,7 @@ def register(ctx):
     app = ctx.app
     framework = ctx.framework
     require_auth = ctx.require_auth
+    require_super = ctx.require_super
     audit_log = ctx.audit_log
     get_client_ip = ctx.get_client_ip
     _project_root = ctx._project_root
@@ -190,7 +191,7 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': str(e)}), 500
 
     @app.route('/api/framework/update', methods=['POST'])
-    @require_auth
+    @require_super
     def update_framework():
         """
         从 GitHub 更新框架源码到指定版本（默认最新 Release）
@@ -198,12 +199,28 @@ def register(ctx):
         保留用户数据（plugins/、data/、config.yaml、*.db 等），
         更新后需重启生效。
         请求体可选 version 指定目标版本号（如 1.0.0）。
+
+        供应链安全（fail closed）：更新 ZIP 必须通过 sha256 校验后才落盘覆盖——
+        - config.security.update_expected_sha256 配置了期望哈希 → 强制比对；
+        - 未配置 → 默认拒绝更新；确要跳过校验须显式设置
+          config.security.update_allow_unsigned: true（不推荐）。
         """
         admin = request.admin
         repo = 'kuangxing6367/Zero_Nexus'
         branch = 'main'
         root = _project_root()
         req_version = (request.json or {}).get('version') or ''
+
+        sec_cfg = framework.config.get('security', {}) or {}
+        expected_sha = str(sec_cfg.get('update_expected_sha256') or '').strip().lower()
+        allow_unsigned = bool(sec_cfg.get('update_allow_unsigned'))
+        if not expected_sha and not allow_unsigned:
+            return jsonify({
+                'code': 403,
+                'msg': ('框架更新已启用供应链校验：请先在 config.yaml → security.'
+                        'update_expected_sha256 填入目标 ZIP 的 sha256，或显式设置 '
+                        'security.update_allow_unsigned: true 跳过校验（不推荐）。'),
+            }), 403
 
         try:
             # 指定版本 → 用对应 tag；否则用最新 Release tag；无 Release 回退 main 分支 ZIP
@@ -226,6 +243,26 @@ def register(ctx):
             tmp_zip = _download_zip_file(_github_url_candidates(zip_url))
             if tmp_zip is None:
                 return jsonify({'code': 500, 'msg': '框架更新 ZIP 下载失败（代理/镜像/直连均不可用）'}), 500
+
+            # sha256 校验（fail closed）：哈希不匹配 → 拒绝覆盖任何文件
+            if expected_sha:
+                import hashlib as _hashlib
+                h = _hashlib.sha256()
+                with open(tmp_zip, 'rb') as f:
+                    for chunk in iter(lambda: f.read(65536), b''):
+                        h.update(chunk)
+                actual_sha = h.hexdigest()
+                if actual_sha != expected_sha:
+                    audit_log(admin['id'], admin['username'], 'update_framework',
+                              'system', 'framework', {'expected': expected_sha,
+                                                      'actual': actual_sha}, 'failure',
+                              'sha256 校验失败，已拒绝更新')
+                    return jsonify({
+                        'code': 400,
+                        'msg': (f'更新 ZIP sha256 校验失败（期望 {expected_sha[:16]}…，'
+                                f'实际 {actual_sha[:16]}…），已拒绝更新。'
+                                '包体可能被镜像篡改或目标版本已变更，请核对哈希后重试。'),
+                    }), 400
 
             # 解压到临时目录
             tmp_dir = tempfile.mkdtemp(prefix='zernus_fw_')
@@ -282,7 +319,7 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': f'更新失败: {e}'}), 500
 
     @app.route('/api/restart', methods=['POST'])
-    @require_auth
+    @require_super
     def restart_framework():
         """重启框架：用 os.execv 原地替换进程，不依赖外部进程管理器"""
         admin = request.admin
@@ -311,7 +348,7 @@ def register(ctx):
         return jsonify({'code': 0, 'msg': '框架正在重启...'})
 
     @app.route('/api/terminal/exec', methods=['POST'])
-    @require_auth
+    @require_super
     def terminal_exec():
         """执行终端命令并返回输出"""
         admin = request.admin

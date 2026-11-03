@@ -99,16 +99,23 @@ class Loader:
             print(f"[loader] 找不到提供 {tid} 的源，跳过")
             return None
         local_file = src.fetch_package(mani.get("url", f"{tid}.tar.gz"), cache_dir)
-        # 完整性校验：索引声明的 sha256 必须与落盘包体一致，否则拒绝加载
+        # 完整性校验（强制）：索引必须声明 sha256，且与落盘包体一致，否则拒绝加载。
+        # 无完整性元数据的源（旧版 build.py / 第三方索引）一律 fail closed，
+        # 避免「下载即执行」的供应链注入面。
         expected = str(mani.get("sha256") or "").strip().lower()
-        if expected:
-            actual = self._sha256_file(local_file)
-            if actual != expected:
-                logger.error(
-                    f"[loader] 包 {tid} sha256 校验失败（期望 {expected[:16]}…，"
-                    f"实际 {actual[:16]}…），已拒绝加载。包体可能被篡改或损坏。"
-                )
-                return None
+        if not expected:
+            logger.error(
+                f"[loader] 包 {tid} 所在源未声明 sha256 完整性校验值，"
+                f"已拒绝加载。请用 repo/build.py 重新生成索引（含 sha256）。"
+            )
+            return None
+        actual = self._sha256_file(local_file)
+        if actual != expected:
+            logger.error(
+                f"[loader] 包 {tid} sha256 校验失败（期望 {expected[:16]}…，"
+                f"实际 {actual[:16]}…），已拒绝加载。包体可能被篡改或损坏。"
+            )
+            return None
         # 签名校验（可选）：索引条目带 signature 时，加载端必须提供同一密钥
         # （环境变量 ZKG_SIGNING_KEY）。带签名而本地无密钥 → 拒绝（fail closed）。
         sig = str(mani.get("signature") or "").strip().lower()
@@ -126,13 +133,57 @@ class Loader:
                 return None
         extract = os.path.join(cache_dir, "extracted")
         os.makedirs(extract, exist_ok=True)
-        with tarfile.open(local_file) as tf:
-            tf.extractall(extract)
+        if not self._safe_extract(local_file, extract):
+            return None
         for root, _d, files in os.walk(extract):
             if entry in files:
                 return self._import_file(f"{tid}_tool",
                                           os.path.join(root, entry))
         return None
+
+    def _safe_extract(self, tar_path: str, dest: str) -> bool:
+        """安全解包：拒绝绝对路径 / 路径穿越 / 链接成员，防 tar 恶意写文件。
+
+        优先使用标准库 data filter（Python ≥3.11.4），旧版本回退为
+        逐成员白名单校验后再解包。任一成员不安全即整体拒绝（返回 False）。
+        """
+        try:
+            with tarfile.open(tar_path) as tf:
+                try:
+                    tf.extractall(dest, filter="data")
+                    return True
+                except TypeError:
+                    pass  # 当前 Python 无 filter 参数
+                except tarfile.FilterError as e:
+                    logger.error(
+                        f"[loader] 包体 {os.path.basename(tar_path)} 含不安全成员，"
+                        f"已拒绝解包: {e}")
+                    return False
+                dest_real = os.path.realpath(dest)
+                for m in tf.getmembers():
+                    if not self._member_safe(m, dest_real):
+                        logger.error(
+                            f"[loader] 包体 {os.path.basename(tar_path)} 成员 "
+                            f"{m.name!r} 不安全（绝对路径/路径穿越/链接），已拒绝解包。")
+                        return False
+                tf.extractall(dest)
+                return True
+        except tarfile.TarError as e:
+            logger.error(f"[loader] 包体 {os.path.basename(tar_path)} 解包失败: {e}")
+            return False
+
+    @staticmethod
+    def _member_safe(m, dest_real: str) -> bool:
+        name = (m.name or "").replace("\\", "/")
+        if name.startswith("/") or (len(name) > 1 and name[1] == ":"):
+            return False                       # 绝对路径 / Windows 盘符
+        parts = [p for p in name.split("/") if p not in ("", ".")]
+        if any(p == ".." for p in parts):
+            return False                       # 路径穿越
+        if m.issym() or m.islnk():
+            return False                       # 机制包无需链接成员，一律拒绝
+        target = os.path.realpath(os.path.join(dest_real, *parts)) if parts else dest_real
+        return target == dest_real or target.startswith(dest_real + os.sep)
 
     @staticmethod
     def _sha256_file(path: str) -> str:

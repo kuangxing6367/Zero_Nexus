@@ -8,6 +8,7 @@ OneBot 11 协议适配器（官方插件）
 - 通过 framework.messaging.protocol.ProtocolAdapter 抽象与 ServiceRegistry 接入框架。
 """
 import asyncio
+import hmac as _hmac
 import importlib.util
 import json
 import logging
@@ -89,6 +90,27 @@ def normalize_event(raw: dict, bot_name: str) -> Optional[dict]:
 
 
 # ── WebSocket 连接管理 ─────────────────────────────────────────
+
+def _is_loopback_host(host):
+    """判断监听地址是否仅回环可达（127.x / ::1 / localhost）"""
+    if not host:
+        return False
+    h = str(host).strip().lower()
+    if h in ('localhost', '::1', '[::1]'):
+        return True
+    if h.startswith('127.'):
+        return True
+    return False
+
+
+def _token_ok(received, expected):
+    """常数时间 token 比对（expected 为空时视为未启用校验）"""
+    if not expected:
+        return True
+    if not received:
+        return False
+    return _hmac.compare_digest(received, expected)
+
 
 def _extract_token(path, headers):
     token = ''
@@ -335,7 +357,7 @@ class OneBotWebSocketServer:
     async def _process_request_v13(self, connection, request):
         if self.access_token:
             token = _extract_token(request.path, request.headers)
-            if token != self.access_token:
+            if not _token_ok(token, self.access_token):
                 try:
                     return connection.respond(403, "access_token error\n")
                 except Exception:
@@ -345,7 +367,7 @@ class OneBotWebSocketServer:
     async def _process_request_v10(self, path, request_headers):
         if self.access_token:
             token = _extract_token(path, request_headers)
-            if token != self.access_token:
+            if not _token_ok(token, self.access_token):
                 from http import HTTPStatus
                 return (HTTPStatus.FORBIDDEN, [], b"access_token error\n")
         return None
@@ -356,7 +378,7 @@ class OneBotWebSocketServer:
 
         if self.access_token:
             token = _extract_token(req_path, headers)
-            if token != self.access_token:
+            if not _token_ok(token, self.access_token):
                 try:
                     await ws.close(code=4001, reason="access_token error")
                 except Exception:
@@ -568,6 +590,15 @@ def register(ctx):
     fw.services.register('api_caller', _adapter_instance.api_caller)
     fw.services.register('onebot_api', _adapter_instance._onebot_api)
     fw.services.register('ws_server', _adapter_instance.ws_server)
+
+    # 接入端安全门禁：非回环监听 + 空 token = 任意主机可注入伪造事件，拒绝启动
+    if not onebot_cfg.get('access_token', '') and not _is_loopback_host(
+            _adapter_instance.config.get('listen_host', '127.0.0.1')):
+        logger.error(
+            "OneBot WebSocket 拒绝启动: listen_host 为非回环地址且 access_token 为空，"
+            "任意主机均可连接注入伪造消息。请设置 onebot.access_token，或将 listen_host 改为 127.0.0.1。"
+        )
+        return
 
     # OneBot 专属安全提示（框架核心不再假设具体协议，故由本适配器自行提示）
     web_host = fw.config.get('web', {}).get('host', '0.0.0.0')

@@ -9,6 +9,46 @@
 
 ## 开发中
 
+### 安全加固（P0/P1 冲刺）
+
+- **OneBot 接入端默认值收紧（P0）**：`onebot.listen_host` 默认 `0.0.0.0` →
+  `127.0.0.1`（extensions.yaml 与 config 内置模板同步）；非回环监听且
+  `access_token` 为空时接入端**拒绝启动**（空 token 即不校验，任意主机可注入
+  伪造消息事件）；token 比对全部改为常数时间（`hmac.compare_digest`）。
+- **admin 默认密码治理**：启动自愈不再把「从未登录的遗留 bcrypt 账号」重置回
+  已知的 admin123，改为**随机一次性密码**（仅日志打印一次）；`admin_users` 新增
+  `must_change_password` 列——种子账号、存量仍在用默认密码的账号、被随机重置的
+  账号自动打标；打标账号登录后除改密/登出/`/api/me` 外的所有管理接口返回 403
+  （响应携带 `must_change_password: true`），改密成功自动清除标记。
+- **zkg 加载器完整性强制（fail closed）**：源索引未声明 sha256 的包拒绝加载
+  （杜绝「下载即执行」的无校验供应链）；tar 解包改走安全路径——优先标准库
+  `filter='data'`，旧 Python 回退逐成员校验（拒绝绝对路径 / `..` 穿越 / 链接成员）。
+- **框架自更新 fail-closed**：`/api/framework/update` 改为 require_super，且
+  更新 ZIP 必须通过 sha256 校验——配置 `security.update_expected_sha256` 强制比对，
+  未配置时默认拒绝更新（显式 `security.update_allow_unsigned: true` 可跳过，
+  不推荐）；`/api/restart`、`/api/terminal/exec` 同步提升为 require_super。
+- **admin/super 角色边界**：加载即执行代码或可读取敏感信息的端点提升为
+  require_super——插件上传、市场安装、插件更新、依赖安装（pip）、隔离环境管理、
+  文件读取/下载、config.yaml 全量读取（含数据库口令与各扩展密钥）。
+- **node_agent 安全门禁**：新增 `node_agent.allow_docker`（默认 false）——
+  `docker.ws`（含容器 exec）与 `docker.pty` / PTY 流此前不受 `allow_shell`
+  约束，拿到 hub 控制权即默认获得节点容器 shell；现在与 shell 同级，须显式开闸。
+- **node_agent 入站帧验签**：agent 对 hub 下发帧执行与 hub 对称的校验
+  （时间戳窗口 + 整帧 HMAC + 单调序号），校验失败断开重连；hub 侧出站帧序号
+  从「毫秒时间戳截断」改为全帧型统一单调计数器（`_out_seq`），与 agent 端
+  防重放窗口正确配对。**注意：hub 与 agent 需同版本部署。**
+- **WebUI CORS 默认拒绝**：未配置 `cors_allowed_origins` 时不再反射任意 Origin
+  （此前反射 + `Allow-Credentials: true` 等于放行任意站点携带凭据跨源调用）。
+- **API Key 哈希落库**：`api_tokens.token` 改存 sha256（明文仅创建响应返回一次）；
+  升级前入库的遗留明文 Key 验证通过后就地升级为哈希。
+- **node_agent 停止修复**：`stop()` 此前取消一个从未赋值的 `_task`（恒为 None），
+  热卸载/停机后连接与线程全部残留；现改为停止位 + 关连接 + 取消循环任务。
+- **node_agent Windows 兼容**：顶层 `import pty` 加平台防护（pty 仅 POSIX，
+  此前 Windows 启用该扩展即加载失败）。
+- 新增回归测试 `tests/test_security_hardening.py`（37 项：接入端门禁 / token
+  语义 / zkg 完整性与穿越 / 强制改密 / CORS / API Key 哈希 / 更新 fail-closed /
+  账号自愈迁移）。
+
 ### 多机管理（L2 控制通道）
 
 - 新增官方扩展 `software/extensions/node_control/`（hub 侧）：监听 TCP 接受节点
@@ -79,6 +119,12 @@
 - 机制包工具箱 5→9：新增 `http`（HTTP 客户端，回环自动绕代理、结果对象不抛异常）、
   `retry`（指数退避重试）、`lock`（命名锁 + 跨进程文件锁，同路径可重入）、
   `validate`（声明式参数校验与清洗），全部纯标准库。
+- 机制包工具箱 9→14：新增 `cache`（TTL + LRU 内存缓存，装饰器版 `cached`）、
+  `ratelimit`（令牌桶限速，`try_acquire` / `acquire` 阻塞等待）、
+  `text`（显示宽度 / 按宽度截断 / 脱敏掩码 / slugify）、
+  `pathsafe`（防目录穿越的安全路径拼接）、
+  `hashcode`（哈希摘要 + base64/hex/url 编解码 + 短 ID / UUID），全部纯标准库。
+  新增测试 `tests/test_new_tools.py`（6 项：LRU/TTL / 令牌桶 / 文本 / 路径 / 哈希 / 全链路加载）。
 - 新增测试 `tests/test_zkg_tools.py`（5 项：本地 HTTP 往返 / 重试语义 /
   锁互斥与重入 / 校验清洗 / 全链路加载）。
 

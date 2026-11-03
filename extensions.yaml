@@ -1,9 +1,9 @@
 extensions:
   onebot_adapter:
     enabled: true
-    listen_host: 0.0.0.0
+    listen_host: 127.0.0.1   # 供外部机器接入时改为 0.0.0.0，并同时设置 access_token
     listen_port: 6830
-    access_token: ''
+    access_token: ''         # 建议设置；非回环监听且留空时接入端将拒绝启动
   webui:
     enabled: true
     host: 127.0.0.1
@@ -48,3 +48,4 @@ extensions:
     secret: ''
     interval: 30
     allow_shell: false
+    allow_docker: false   # docker exec / PTY 与 shell 同级，默认禁

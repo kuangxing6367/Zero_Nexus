@@ -30,6 +30,7 @@
 安全边界：hub 只接受节点出站连接，从不反向连接节点；命令在节点侧按白名单执行。
 """
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -44,9 +45,9 @@ logger = logging.getLogger('zernus')
 
 __plugin_meta__ = {
     "name": "节点控制通道",
-    "version": "0.1.0",
+    "version": "0.1.2",
     "author": "Zeronus",
-    "desc": "多机管理 L2：hub 侧控制通道（framed 协议，节点主动外连）",
+    "desc": "多机管理 L2：hub 侧控制通道（framed 协议，节点主动外连+PTY 流）",
     "priority": 30,
     "official": True,
 }
@@ -56,9 +57,30 @@ F_HELLO = 1
 F_HEARTBEAT = 2
 F_CMD = 3
 F_RESULT = 4
+F_STREAM_OPEN = 5     # hub→node：开启 PTY 流
+F_STREAM_DATA = 6     # 双向：流数据块
+F_STREAM_CLOSE = 7    # 双向：关闭流
+F_STREAM_RESIZE = 8   # hub→node：调整 PTY 窗口大小
 
 _READ_TIMEOUT = 90.0      # 握手/读帧兜底超时（秒），远大于心跳周期即可
 _MAX_PAYLOAD = 1024 * 1024
+
+
+def _log_async_failure(what: str):
+    """给 run_coroutine_threadsafe 的 future 挂回调：协程抛异常时打日志。
+
+    这类「火忘型」任务没人 await，异常会静静躺在 future 里，
+    表现就是「功能没反应、日志里什么都没有」——加这个才不会白排查。
+    """
+    def _cb(fut):
+        try:
+            exc = fut.exception()
+        except Exception:      # 已取消 / 取异常本身失败
+            return
+        if exc is not None:
+            logger.error("[node_control] %s 协程异常: %r", what, exc,
+                         exc_info=exc)
+    return _cb
 
 
 class NodeControl:
@@ -79,7 +101,10 @@ class NodeControl:
         self.conns = {}
         self._lock = threading.Lock()          # 保护 conns / pending
         self._pending = {}                     # cmd id -> future
-        self._cmd_seq = 0
+        self._cmd_seq = 0                      # 命令载荷 id（回执匹配用）
+        self._out_seq = 0                      # 出站帧序号：全帧型统一单调递增（防重放配对）
+        self._streams = {}                     # stream id -> {name,on_data,on_close,exp}
+        self._stream_sid = 0
         self._loop = None
         self._server = None
         self._stop_evt = None
@@ -188,6 +213,25 @@ class NodeControl:
                                             'data': res.get('data')})
                     except Exception:
                         logger.exception("[node_control] RESULT 处理异常")
+                elif fr.type == F_STREAM_DATA:
+                    try:
+                        d = json.loads(fr.text())
+                        sid = int(d.get('sid', -1))
+                        data = d.get('data')
+                        st = self._streams.get(sid)
+                        if st and data is not None and st.get('on_data'):
+                            st['on_data'](base64.b64decode(data))
+                    except Exception:
+                        logger.exception("[node_control] STREAM_DATA 处理异常")
+                elif fr.type == F_STREAM_CLOSE:
+                    try:
+                        d = json.loads(fr.text())
+                        sid = int(d.get('sid', -1))
+                        st = self._streams.pop(sid, None)
+                        if st and st.get('on_close'):
+                            st['on_close'](sid)
+                    except Exception:
+                        logger.exception("[node_control] STREAM_CLOSE 处理异常")
                 # 其他类型忽略（协议向前兼容）
         except (asyncio.IncompleteReadError, asyncio.TimeoutError,
                 ConnectionError, ValueError, OSError, json.JSONDecodeError) as e:
@@ -238,13 +282,14 @@ class NodeControl:
                 return {'ok': False, 'data': f'节点 {name} 不在线'}
             self._cmd_seq += 1
             cid = self._cmd_seq
+            self._out_seq += 1
+            seq = self._out_seq
             fut = self._loop.create_future()
             self._pending[cid] = fut
         try:
             payload = json.dumps({'id': cid, 'cmd': cmd, 'args': args},
                                  ensure_ascii=False).encode('utf-8')
             conn['codec']  # per-node 密钥
-            seq = int(time.time() * 1000) & 0x7FFFFFFF   # 毫秒级单调序号
             frame = conn['codec'].encode(F_CMD, int(time.time()), seq, payload)
             conn['writer'].write(frame)
             await conn['writer'].drain()
@@ -256,6 +301,121 @@ class NodeControl:
         finally:
             with self._lock:
                 self._pending.pop(cid, None)
+
+    # ── 流式会话（PTY）────────────────────────────────────
+    def open_stream(self, name: str, cmd: str, args: dict,
+                    on_data, on_close, timeout: float = 300.0):
+        """开启一个到节点的 PTY 流会话（线程安全，可从任意线程调用）。
+
+        :param on_data: 回调(bytes) —— 节点推送的流数据（在 node_control 循环线程执行，
+                                  调用方需自行投递到自己的事件循环）
+        :param on_close: 回调(sid) —— 流结束/远端关闭时触发
+        :return: stream id（>0），失败返回 None
+        """
+        if not self._loop:
+            return None
+        fut = asyncio.run_coroutine_threadsafe(
+            self._open_stream_coro(name, cmd, args, on_data, on_close, timeout),
+            self._loop)
+        try:
+            return fut.result(5)
+        except Exception as e:
+            logger.warning("[node_control] open_stream 失败: %s", e)
+            return None
+
+    async def _open_stream_coro(self, name, cmd, args, on_data, on_close, timeout):
+        with self._lock:
+            conn = self.conns.get(name)
+            if conn is None:
+                return None
+            self._stream_sid += 1
+            sid = self._stream_sid
+            self._out_seq += 1
+            seq = self._out_seq
+            self._streams[sid] = {'name': name, 'on_data': on_data,
+                                  'on_close': on_close,
+                                  'exp': time.time() + timeout}
+        payload = json.dumps({'id': sid, 'cmd': cmd, 'args': args},
+                             ensure_ascii=False).encode('utf-8')
+        frame = conn['codec'].encode(F_STREAM_OPEN, int(time.time()), seq, payload)
+        conn['writer'].write(frame)
+        await conn['writer'].drain()
+        return sid
+
+    def stream_write(self, sid: int, data_b64: str):
+        """向流写入数据（hub→node，用户在终端里敲的字）。"""
+        if not self._loop:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._stream_write_coro(sid, data_b64), self._loop)
+
+    async def _stream_write_coro(self, sid, data_b64):
+        st = self._streams.get(sid)
+        if not st:
+            return
+        with self._lock:
+            conn = self.conns.get(st['name'])
+            if conn is None:
+                return
+            self._out_seq += 1
+            seq = self._out_seq
+        payload = json.dumps({'sid': sid, 'data': data_b64},
+                             ensure_ascii=False).encode('utf-8')
+        frame = conn['codec'].encode(F_STREAM_DATA, int(time.time()), seq, payload)
+        conn['writer'].write(frame)
+        await conn['writer'].drain()
+
+    def resize_stream(self, sid: int, cols: int, rows: int):
+        """调整流的 PTY 窗口大小（hub→node；前端终端尺寸变化时调用）。"""
+        if not self._loop:
+            return
+        fut = asyncio.run_coroutine_threadsafe(
+            self._resize_stream_coro(sid, cols, rows), self._loop)
+        # 火忘型协程抛异常是没人接的：必须自己捞出来打日志，
+        # 否则 resize 静默失效、只看得到「没反应」。
+        fut.add_done_callback(_log_async_failure("resize"))
+
+    async def _resize_stream_coro(self, sid, cols, rows):
+        st = self._streams.get(sid)
+        if not st:
+            return
+        with self._lock:
+            conn = self.conns.get(st['name'])
+            if conn is None:
+                return
+            self._out_seq += 1
+            seq = self._out_seq
+        payload = json.dumps({'sid': sid, 'cols': int(cols), 'rows': int(rows)},
+                             ensure_ascii=False).encode('utf-8')
+        frame = conn['codec'].encode(F_STREAM_RESIZE, int(time.time()), seq, payload)
+        conn['writer'].write(frame)
+        await conn['writer'].drain()
+
+    def close_stream(self, sid: int):
+        """关闭流（hub→node）。"""
+        if not self._loop:
+            return
+        asyncio.run_coroutine_threadsafe(self._close_stream_coro(sid), self._loop)
+
+    async def _close_stream_coro(self, sid):
+        st = self._streams.pop(sid, None)
+        if not st:
+            return
+        with self._lock:
+            conn = self.conns.get(st['name'])
+            if conn is None:
+                return
+            self._out_seq += 1
+            seq = self._out_seq
+        payload = json.dumps({'sid': sid}, ensure_ascii=False).encode('utf-8')
+        frame = conn['codec'].encode(F_STREAM_CLOSE, int(time.time()), seq, payload)
+        conn['writer'].write(frame)
+        await conn['writer'].drain()
+        try:
+            if st.get('on_close'):
+                st['on_close'](sid)
+        except Exception:
+            logger.exception("[node_control] on_close 异常")
 
 
 def register(ctx):

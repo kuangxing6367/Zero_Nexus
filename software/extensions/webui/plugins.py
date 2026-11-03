@@ -91,9 +91,9 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': str(e)}), 500
 
     @app.route('/api/plugins/upload', methods=['POST'])
-    @require_auth
+    @require_super
     def upload_plugin():
-        """上传 ZIP 插件包"""
+        """上传 ZIP 插件包（插件加载即执行代码，仅超级管理员）"""
         admin = request.admin
 
         if 'file' not in request.files:
@@ -308,7 +308,7 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': str(e)}), 500
 
     @app.route('/api/plugins/<plugin_name>/install_deps', methods=['POST'])
-    @require_auth
+    @require_super
     def install_plugin_deps(plugin_name):
         """一键安装插件缺失的 Python 依赖"""
         admin = request.admin
@@ -341,7 +341,7 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': str(e)}), 500
 
     @app.route('/api/plugins/<plugin_name>/create_isolated_env', methods=['POST'])
-    @require_auth
+    @require_super
     def create_plugin_isolated_env(plugin_name):
         """为插件创建隔离虚拟环境（解决版本冲突）"""
         admin = request.admin
@@ -380,7 +380,7 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': str(e)}), 500
 
     @app.route('/api/plugins/<plugin_name>/isolated_env', methods=['DELETE'])
-    @require_auth
+    @require_super
     def delete_plugin_isolated_env(plugin_name):
         """删除插件的隔离虚拟环境（清理磁盘空间）"""
         admin = request.admin
@@ -621,7 +621,7 @@ def register(ctx):
             logger.warning(f"写回插件 github 元信息失败 {plugin_name}: {e}")
 
     @app.route('/api/plugins/<plugin_name>/update', methods=['POST'])
-    @require_auth
+    @require_super
     def update_plugin_from_github(plugin_name):
         """从 GitHub 更新插件代码"""
         admin = request.admin
@@ -797,7 +797,7 @@ def register(ctx):
         return jsonify({'code': 0, 'msg': f'已保存 {len(cleaned)} 个自定义插件源'})
 
     @app.route('/api/plugins/market/install', methods=['POST'])
-    @require_auth
+    @require_super
     def plugin_market_install():
         """从市场安装插件（下载 ZIP 到插件目录并加载）"""
         admin = request.admin

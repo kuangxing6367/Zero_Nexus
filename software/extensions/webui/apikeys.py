@@ -2,6 +2,7 @@
 """
 接口令牌（API Key）管理：与用户会话 token 解耦，专供外部程序调用 REST API
 """
+import hashlib
 import logging
 import secrets
 import time
@@ -63,13 +64,14 @@ def register(ctx):
         expires_at = None
         if isinstance(expires_in, (int, float)) and expires_in > 0:
             expires_at = str(int(time.time()) + int(expires_in))
-        token = secrets.token_hex(32)  # 64 字符；验证时先查 admin_users（哈希/明文兼容）落空后才进 api_tokens 分支
+        token = secrets.token_hex(32)  # 64 字符；仅创建响应返回一次，库内只存 sha256
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
         now = str(int(time.time()))
         try:
             db.execute(
                 "INSERT INTO api_tokens (token, name, role, created_by, created_at, expires_at, is_active) "
                 "VALUES (%s, %s, %s, %s, %s, %s, 1)",
-                (token, name, role, request.admin.get('username'), now, expires_at)
+                (token_hash, name, role, request.admin.get('username'), now, expires_at)
             )
             audit_log(request.admin['id'], request.admin['username'], 'apikey_create',
                       'api_token', name, {'role': role, 'expires_at': expires_at})

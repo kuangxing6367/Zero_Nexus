@@ -114,6 +114,7 @@ class DependencyMixin:
 
         missing = []
         installed = []
+        conflicts = []
 
         for dep in deps:
             pkg_name, operator, required_ver = _parse_version_spec(dep)

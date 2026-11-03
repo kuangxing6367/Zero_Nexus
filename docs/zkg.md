@@ -55,6 +55,11 @@ zkg:
 | `retry` | 重试/指数退避（函数与装饰器两用，异常白名单 + 抖动） |
 | `lock` | 互斥锁（进程内命名锁单例 + 跨进程文件锁，同路径可重入） |
 | `validate` | 声明式参数校验（类型收敛/必填/范围/枚举/默认值，返回清洗数据） |
+| `cache` | TTL + LRU 内存缓存（惰性过期、线程安全、装饰器版 `cached`） |
+| `ratelimit` | 令牌桶限速（`try_acquire` 立即 / `acquire` 阻塞等待） |
+| `text` | 文本工具（显示宽度 / 按宽度截断 / 脱敏掩码 / slugify） |
+| `pathsafe` | 安全路径拼接（防目录穿越，`safe_join` / `is_within`） |
+| `hashcode` | 哈希摘要（sha256/sha1/md5）+ 编解码（base64/hex/url）+ 短 ID / UUID |
 
 均为**纯标准库实现，零第三方依赖**；在 `repo/<id>/main.py` 的模块文档串里
 维护各自「稳定 API 表面」。插件用 `ctx.zkg_tool("<id>")` 取用。

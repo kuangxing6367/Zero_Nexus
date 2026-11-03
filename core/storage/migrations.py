@@ -10,6 +10,7 @@ init_db 会写入 core.storage 包级 `db` 单例，供 framework/database 兼�
 
 import logging
 import time
+from typing import Optional
 
 from .engine import Database
 
@@ -180,14 +181,21 @@ _DEFAULT_ADMIN_HASH = (
 )
 
 
-def _ensure_admin_account(database):
+def _ensure_admin_account(database, has_bcrypt: Optional[bool] = None):
     """确保存在可用的超级管理员账号（启动自愈，避免「建了库却登不进后台」）。
 
-    三种情形：
+    :param has_bcrypt: 环境是否安装 bcrypt；None = 自动探测（测试可注入 False
+                       来模拟「遗留 bcrypt 哈希且无 bcrypt」的场景）。
+
+    四种情形：
     1. 无 admin_users 表 → 交给 init.sql 处理，跳过；
-    2. 表存在但账号为空 → 用框架自带 pbkdf2 哈希种入默认账号；
-    3. 存在遗留 bcrypt 账号且当前环境未安装 bcrypt（会彻底无法登录）：
-       - 若该账号仍是「从未登录过的种子账号」，用默认密码就地重置为 pbkdf2；
+    2. 表存在但账号为空 → 种入默认账号 admin/admin123，并标记
+       must_change_password=1（登录后除改密外的接口全部 403，强制改密）；
+    3. 仍是默认密码（password_hash 与种子一致）的存量账号 → 补标记
+       must_change_password=1（不重置密码，只强制改密）；
+    4. 存在遗留 bcrypt 账号且当前环境未安装 bcrypt（会彻底无法登录）：
+       - 若该账号仍是「从未登录过的种子账号」，重置为**随机一次性密码**
+         （打印到日志，仅此一次），并标记强制改密；绝不重置为已知的默认密码；
        - 若账号已登录过（说明当时装过 bcrypt），只告警，绝不静默改密。
     """
     try:
@@ -195,22 +203,41 @@ def _ensure_admin_account(database):
             return
 
         rows = database.query(
-            "SELECT id, username, password_hash, token, last_login_at FROM admin_users"
+            "SELECT id, username, password_hash, token, last_login_at, must_change_password "
+            "FROM admin_users"
         ) or []
+
+        def _flag_must_change(row_id, username, reason):
+            database.execute(
+                "UPDATE admin_users SET must_change_password = 1 WHERE id = %s",
+                (row_id,),
+            )
+            logger.warning(
+                "[admin] 账号 %s %s，已标记 must_change_password=1："
+                "登录后除改密外的管理接口将返回 403，直到修改密码。",
+                username, reason,
+            )
 
         if not rows:
             database.execute(
-                "INSERT INTO admin_users (username, password_hash, role) VALUES (%s, %s, %s)",
+                "INSERT INTO admin_users (username, password_hash, role, must_change_password) "
+                "VALUES (%s, %s, %s, 1)",
                 (_DEFAULT_ADMIN_USERNAME, _DEFAULT_ADMIN_HASH, 'super'),
             )
             logger.warning(
                 "[admin] 数据库无任何管理员账号，已种入默认账号 "
-                f"{_DEFAULT_ADMIN_USERNAME}/admin123（请登录后立即修改密码）"
+                f"{_DEFAULT_ADMIN_USERNAME}/admin123（已标记强制改密，登录后请立即修改）"
             )
             return
 
+        # 仍在使用默认密码的存量账号：补标记强制改密（不改动密码本身）
+        for row in rows:
+            if row.get('password_hash') == _DEFAULT_ADMIN_HASH and not row.get('must_change_password'):
+                _flag_must_change(row['id'], row['username'], '仍在使用默认密码 admin123')
+
         from importlib.util import find_spec
-        has_bcrypt = find_spec('bcrypt') is not None
+        if has_bcrypt is None:
+            has_bcrypt = find_spec('bcrypt') is not None
         if has_bcrypt:
             return
 
@@ -220,15 +247,18 @@ def _ensure_admin_account(database):
                 continue
             never_logged_in = not row.get('token') and not row.get('last_login_at')
             if never_logged_in:
+                # 重置为随机一次性密码（日志打印一次），而非已知的默认密码
+                import secrets as _secrets
+                oneoff = _secrets.token_urlsafe(12)
                 database.execute(
-                    "UPDATE admin_users SET password_hash = %s WHERE id = %s",
-                    (_DEFAULT_ADMIN_HASH, row['id']),
+                    "UPDATE admin_users SET password_hash = %s, must_change_password = 1 WHERE id = %s",
+                    (_hash_password_stdlib(oneoff), row['id']),
                 )
                 logger.warning(
                     "[admin] 账号 %s 的密码为遗留 bcrypt 哈希，而当前环境未安装 bcrypt，"
-                    "无法登录；该账号从未登录过，已按默认密码 admin123 重置为 pbkdf2。"
-                    "请登录后立即修改密码。",
-                    row['username'],
+                    "无法登录；该账号从未登录过，已重置为随机一次性密码：%s "
+                    "（仅此一次打印，登录后将被强制要求修改密码）",
+                    row['username'], oneoff,
                 )
             else:
                 logger.error(
@@ -238,6 +268,16 @@ def _ensure_admin_account(database):
                 )
     except Exception as e:
         logger.warning(f"[admin] 管理员账号自愈检查跳过: {e}")
+
+
+def _hash_password_stdlib(password: str) -> str:
+    """pbkdf2_sha256 哈希（与 software/extensions/webui/password.py 格式一致，
+    内核侧独立实现以避免 core → software 反向依赖）"""
+    import hashlib as _hashlib
+    import os as _os
+    salt = _os.urandom(16)
+    dk = _hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 200_000)
+    return f"pbkdf2_sha256$200000${salt.hex()}${dk.hex()}"
 
 
 def _migrate_commands_table(database):
@@ -324,6 +364,18 @@ def _migrate_admin_users_table(database):
                     "COMMENT '令牌签发时间'"
                 )
             logger.info("数据库迁移: admin_users 表添加 token_created_at 列")
+
+        if not database.table_has_column('admin_users', 'must_change_password'):
+            if database.db_type == 'sqlite':
+                database.execute(
+                    "ALTER TABLE admin_users ADD COLUMN must_change_password INTEGER DEFAULT 0"
+                )
+            else:
+                database.execute(
+                    "ALTER TABLE admin_users ADD COLUMN must_change_password TINYINT DEFAULT 0 "
+                    "COMMENT '登录后强制改密'"
+                )
+            logger.info("数据库迁移: admin_users 表添加 must_change_password 列")
     except Exception:
         pass
 

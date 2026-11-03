@@ -46,7 +46,8 @@ def register(ctx):
 
         try:
             row = db.query_one(
-                "SELECT id, username, password_hash, role, is_active FROM admin_users WHERE username = %s",
+                "SELECT id, username, password_hash, role, is_active, must_change_password "
+                "FROM admin_users WHERE username = %s",
                 (username,)
             )
         except Exception as e:
@@ -98,7 +99,8 @@ def register(ctx):
         resp = jsonify({
             'code': 0,
             'msg': '登录成功',
-            'data': {'token': token, 'username': username, 'role': row['role']}
+            'data': {'token': token, 'username': username, 'role': row['role'],
+                     'must_change_password': bool(row['must_change_password'])}
         })
         _sync_token_cookie(resp, token)
         return resp
@@ -149,7 +151,10 @@ def register(ctx):
             return jsonify({'code': 500, 'msg': '密码验证失败'}), 500
 
         new_hash = hash_password(new_pwd)
-        db.execute("UPDATE admin_users SET password_hash = %s WHERE id = %s", (new_hash, admin['id']))
+        db.execute(
+            "UPDATE admin_users SET password_hash = %s, must_change_password = 0 WHERE id = %s",
+            (new_hash, admin['id'])
+        )
         audit_log(admin['id'], admin['username'], 'change_password', result='success')
 
         return jsonify({'code': 0, 'msg': '密码已修改'})
