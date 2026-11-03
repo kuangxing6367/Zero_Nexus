@@ -1,0 +1,9 @@
+[package]
+id = "ratelimit"
+name = "Rate Limit"
+type = "tool"
+version = "1.0.0"
+description = "令牌桶限速（try_acquire / acquire 阻塞等待），对外调用与消息发送的速率控制"
+dependencies = []
+provides = ["ratelimit"]
+entry = "main.py"

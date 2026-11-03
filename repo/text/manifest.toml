@@ -1,0 +1,9 @@
+[package]
+id = "text"
+name = "Text Utils"
+type = "tool"
+version = "1.0.0"
+description = "文本工具：显示宽度 / 按宽度截断 / 脱敏掩码 / slugify，纯标准库"
+dependencies = []
+provides = ["text"]
+entry = "main.py"
