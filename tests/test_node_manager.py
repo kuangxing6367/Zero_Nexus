@@ -69,7 +69,14 @@ def _fake_node(port, ok=True):
             pass
     srv = ThreadingHTTPServer(("127.0.0.1", port), H)
     srv.daemon_threads = True
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # 线程句柄必须留着：只 server_close() 不会停 serve_forever 循环，
+    # 残留的 daemon 线程会在解释器 finalize 时抢 stderr 锁
+    # （Windows + 3.11 上表现为 _enter_buffered_busy 致命错误、进程退出码 1，
+    #  把一套本来 10/10 PASS 的测试整体判红）。
+    t = threading.Thread(target=srv.serve_forever, daemon=True,
+                         name=f"fake-node-{port}")
+    t.start()
+    srv._thread = t
     return srv
 
 
@@ -146,8 +153,20 @@ try:
           "node_manager" not in getattr(fw2, "services", {}))
 finally:
     node_manager.unregister()
-    srv1.server_close()
-    srv2.server_close()
+    # 两台假节点都要 shutdown + join：serve_forever 循环不关掉，daemon 线程
+    # 会活到解释器 finalize，在 Windows 上直接 _enter_buffered_busy 崩掉进程。
+    for _srv in (srv1, srv2):
+        try:
+            _srv.shutdown()
+        except Exception:
+            pass
+        try:
+            _srv.server_close()
+        except Exception:
+            pass
+        _t = getattr(_srv, "_thread", None)
+        if _t is not None:
+            _t.join(timeout=5)
     # 不显式关闭 sqlite 连接：后台轮询线程可能仍在使用，
     # 强行 close 在 Windows 上有段错误风险；进程退出即释放。
     try:
