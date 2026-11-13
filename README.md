@@ -199,7 +199,6 @@ SQLite 与 MySQL 的查询 API 一致（`query` / `query_one` / `execute` / `ins
 | API 参考 | [docs/api.md](docs/api.md) |
 | 安全传输 | [docs/transport.md](docs/transport.md) |
 | 归档解包安全 | [docs/archive-guard.md](docs/archive-guard.md) |
-| 统一资源控制面（第一 / 二阶段 A） | [docs/control-plane.md](docs/control-plane.md) |
 | 接入 IM（OneBot） | [docs/connect-im.md](docs/connect-im.md) |
 | 部署上线 | [docs/deployment.md](docs/deployment.md) |
 | 最佳实践 | [docs/best-practices.md](docs/best-practices.md) |

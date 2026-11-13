@@ -49,13 +49,3 @@ extensions:
     interval: 30
     allow_shell: false
     allow_docker: false   # docker exec / PTY 与 shell 同级，默认禁
-  resource_control:
-    # 仅为框架承载壳：把 control_plane 业务内核接到本进程 DB 与 HTTP。
-    # 业务内核在仓库顶层 control_plane/，零框架依赖，可独立运行。
-    # 壳不构造 ControlPlane（策略与适配器由部署方显式注入）；
-    # 建表需显式调用 install(ctx)，不会在启动时自动执行。
-    enabled: false
-    # 是否额外注册 resources / audit 两条只读路由（默认关闭）。
-    # 「谁能看台账与审计」属于授权策略，由部署方在框架权限层决定后
-    # 再显式打开；本壳不写死任何任务授权。
-    expose_readonly_api: false

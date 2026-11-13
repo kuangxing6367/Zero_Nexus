@@ -9,108 +9,23 @@
 
 ## 开发中
 
-### 统一资源控制面 · 第二阶段 A（工程加固）
+### 边界纠正：统一资源控制面移出框架仓库
 
-> 只修工程正确性与可验证性，**没有新增任何业务逻辑**。
-> 真实网关 claims、凭据保险库、资源适配器、套餐计费、前端仍按既定约束
-> 由部署方决定（第二阶段 B）。
+> 此前 `cc36856` / `fc34776` 两个提交把上层业务的资源台账、生命周期编排
+> 与承载壳误放进本框架仓库，并写进文档主线。Zeronus 是软件宿主框架，
+> 该提供的是 DB / Hook / 事件总线 / 扩展承载这类可复用机制，不是某个
+> 具体业务的台账与开通流程。本条记录移除，不粉饰、不改写历史。
 
-- **修复一个会误删已有资源的缺陷**：第一阶段 `provision` 把台账写入失败
-  一律当成「刚创建的资源没登记上」，无条件调用
-  `adapter.deprovision(external_id)` 回滚。若失败原因是
-  `UNIQUE(kind, external_id)` 冲突（适配器 ID 复用 / 请求重放 / 状态漂移），
-  该回滚会**删掉台账里已有资源对应的真实实例**，而原记录仍在。
-  现在 `store.py` 把唯一键冲突单独识别为 `DuplicateResource`
-  （异常特征匹配后再查一次台账确认），编排层抛 `DuplicateExternalId`、
-  写 `failed` 审计，**不碰真实资源**。真 SQLite 与 DB-API 后端均有回归。
-- **台账与终态审计同事务**：`SqliteBackend`（`BEGIN IMMEDIATE`）与
-  `MysqlBackend`（显式 `BEGIN`，不依赖连接 autocommit）提供
-  `transaction()`；`add_resource_with_audit` / `delete_resource_with_audit`
-  在成功路径一次原子提交，任一步失败两者一起回滚。嵌套事务抛
-  `TransactionError`，不做 savepoint 伪装。第一阶段「审计与业务写入
-  非同一事务」的限制在支持事务的后端上已消除。
-- **后端能力显式声明，不假装原子**：`capabilities()` 与
-  `health()['capabilities']` 暴露 `atomic_audit`。`FrameworkBackend`
-  明确 `supports_transactions = False`（`ctx.db_*` 每次可能取不同池连接，
-  跨调用拼事务无效）；降级时台账先落地、审计后写，审计 detail 带
-  `atomic=False` 并输出 warning，审计失败抛 `AuditCommitError`
-  （含义是「台账已落地」，不得据此回滚真实资源）。
-- **失败语义重写**：授权拒绝永远抛 `PolicyDenied`，补偿审计故障只记日志、
-  不覆盖原始失败原因；原子后端审计写失败 → 台账回滚 + 清理外部资源 +
-  `failed` 审计；非原子后端审计写失败 → `AuditWriteError` 且保留已落地台账；
-  删除路径本地提交失败 → 明确提示「真实资源已删、台账已回滚，人工核对，
-  不要直接重试」。事务只覆盖本地库，这条边界写进所有失败文案。
-- **MySQL 代码路径真验证（非真服务端）**：新增
-  `tests/test_control_plane_tx.py`，用 DB-API 兼容引擎（底层标准库
-  sqlite3，`%s` → `?`）真执行 `MysqlBackend` 发出的每条 SQL，验证参数绑定、
-  SQL 文本无拼接值字面量、BEGIN/COMMIT/ROLLBACK 次数与时机、游标全部回收、
-  事务内故障整体回滚、`ControlPlane` 经该后端跑完整生命周期闭环。
-  MySQL 服务端的 DDL / 隔离级别 / 锁行为仍需上线前真库实测，未粉饰。
-- **壳层只读可观测**：`expose_readonly_api` 默认关闭，开启后额外注册
-  `GET control-plane/resources` 与 `GET control-plane/audit`（复用框架鉴权、
-  limit 夹 1..1000、审计已脱敏）。「谁能看」属于授权策略，壳不写死。
-  `FrameworkBackend` 的降级声明与只读路由一同纳入框架壳回归。
-- 表结构未改动，`SCHEMA_VERSION` 仍为 2；DDL 与列名保持兼容。
-- 重写 `docs/control-plane.md`（阶段划分、事务矩阵、失败语义、
-  缺陷修复说明、已知限制）、两个 README；更新文档导航与 `extensions.yaml`。
-- 验证（本地真跑）：业务内核自检 **116 项**、事务/MySQL 路径 **45 项**、
-  框架壳 **29 项**，全部 0 失败；全量 py_compile 0 错误；YAML 通过；
-  CI 全量 **30** 个测试脚本 0 失败；跑完全量测试后 pool 字节未变化；
-  敏感信息与硬编码生产 IP 扫描无命中。
-- 仍存限制：外部真实资源不在事务内；没有真实网关 / 加密 / 适配器实现；
-  CLI 不提供写操作；MySQL 真服务端未验证；非原子后端没有自动审计补偿。
-
-### 统一资源控制面 · 第一阶段（取代上一版骨架抽象层）
-
-> 方向纠正：**框架只是个壳子**。上一版把主线做成了 Zeronus 扩展里的
-> 契约层 / 槽位注册表 / fail-closed 拒绝实现，那还是在堆框架抽象。
-> 本阶段把业务内核整体移出框架，壳层收敛到只剩两个文件。
-> 骨架的 `contracts.py` / `slots.py` / `schema.py` / `selftest.py`、
-> `docs/resource-control.md` 与 `tests/test_resource_control.py` 已删除，
-> 避免两套数据结构与两套契约并存（git 历史可回溯）。
-
-- 新增仓库顶层 **`control_plane/`**：零框架依赖、只用标准库，
-  不 import `core` / `service` / `software`，可单独运行、单独测试、
-  单独开源。业务内核与框架承载彻底分离。
-- **流程做实、策略留空**：`ControlPlane` 提供
-  `provision` / `deprovision` / `status` / `list_resources` / `tail_audit`
-  真实编排；`policy` 与 `adapters` 是构造参数传入的普通对象，
-  缺一个即抛 `DependencyMissing`，内核一行实现都不提供。
-  没有插件注册中心、没有槽位字典、没有事件总线、没有自动发现。
-- **身份由网关注入**：内核只接收 `actor` / `tenant` / `scopes` 普通参数，
-  不定义 Principal、不查库验身份、不写死任务授权；
-  `Policy.allowed()` 只接受布尔 `True`，`None` / `0` / `'yes'` / `1`
-  一律视为拒绝，防 truthy 值误放行。
-- **数据库薄且自治**：仍只有 `rc_resources` / `rc_audit` 两张表，
-  列名与上一版保持一致避免冲突；不跨库、不 JOIN 框架身份表、
-  不接受第二个连接；不建身份 / 角色 / 权限 / 套餐 / 计费表。
-  DDL 按方言显式分两份（MySQL 5.7 / SQLite），不走魔法翻译。
-- **真删与失败语义**：物理 `DELETE`，无软删列、无归档表；
-  台账写失败尽力回滚真实资源；外部删除失败时台账保留可重试；
-  审计写失败抛 `AuditWriteError` 并明确提示勿盲目重试。
-- **审计脱敏**：`scrub_detail()` 按键名递归脱敏，命中
-  password / secret / token / credential / api_key / private /
-  authorization / cookie 一律替换；detail 限 4000 字符；
-  内核不接触 spec 里的凭据，审计只写元数据。
-- 三种 Backend：`SqliteBackend`（标准库，真跑）、`MysqlBackend`
-  （DB-API 映射，不 import 驱动）、`FrameworkBackend`
-  （`ctx.db_*` → Backend 的薄适配）。CLI 四个子命令
-  init / health / list / audit，刻意不提供 provision / delete。
-- 框架壳 `software/extensions/resource_control/` 只剩
-  `main.py`（承载 store + 只读健康路由）与 `bridge.py`（DB 适配），
-  `register(ctx)` 不建表、不联网、不构造 `ControlPlane`、不注册事件；
-  `GET /api/control-plane/health` 复用框架鉴权。
-- 新增 `docs/control-plane.md`（阶段划分、分层、失败语义、已知限制）、
-  `control_plane/README.md`、`tests/test_control_plane.py`（CI 入口）；
-  更新文档导航、`extensions.yaml` 注释、`NOTICE`。
-- 自检 `python -m control_plane.selftest` **76 项**：真 SQLite 端到端闭环
-  （provision → status → list → deprovision）、SQL 参数化注入串原样存取、
-  真删无残留、审计脱敏与截断、依赖缺失拒绝、非布尔授权拒绝、
-  适配器失败与回滚、外部删除失败可重试、审计写失败语义、
-  CLI 四子命令真跑、源码卫生（零框架 import / 无硬编码 IP 与密钥）。
-  自检夹具 `_TestingOnly*` 只在 selftest.py 内，不注入生产路径。
-- 已知限制（未粉饰）：审计与业务写入非同一事务；无真实网关 / 加密 /
-  适配器实现；MySQL 未连真库验证；CLI 不提供写操作。
+- 删除仓库顶层 `control_plane/`、`software/extensions/resource_control/`、`docs/control-plane.md`
+  与 `tests/test_control_plane*.py`（共 15 个文件）。
+- 清理 `README.md`、`docs/index.md`、`extensions.yaml` 与 `NOTICE` 中的相关叙事与启用项；
+  「开发中」里原两段控制面记录一并移除。
+- 代码整体移出为独立项目（零框架依赖，可单独运行与开源）；
+  **已推送的 Git 历史保留**，未 rewrite、未 force push。
+- 框架自身功能不受影响：归档解包安全层、可复现构建、安全加固、多机管理、zkg
+  等条目均在下方保留。
+- 验证：移除后 CI 逐个测试脚本 0 失败、全量 `py_compile` 0 错误、
+  `extensions.yaml` 解析通过、pool 字节未变化、全仓无控制面残留引用。
 
 ### 可复现构建（更正前一条说明）
 

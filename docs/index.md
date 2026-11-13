@@ -28,7 +28,6 @@ Zeronus 是一个基于 Python 的**软件宿主框架**，采用三层架构（
 | API 参考 | [api.md](api.md) |
 | 安全传输 | [transport.md](transport.md) |
 | 归档解包安全 | [archive-guard.md](archive-guard.md) |
-| 统一资源控制面（第一 / 二阶段 A） | [control-plane.md](control-plane.md) |
 | 接入 IM（OneBot） | [connect-im.md](connect-im.md) |
 | 部署上线 | [deployment.md](deployment.md) |
 | 最佳实践 | [best-practices.md](best-practices.md) |
