@@ -623,7 +623,13 @@ def register_builtins(fw):
             tmp_dir = tempfile.mkdtemp(prefix='zernus_upd_')
             try:
                 with zipfile.ZipFile(tmp_zip, 'r') as zf:
-                    zf.extractall(tmp_dir)
+                    # GitHub archive 条目多，单独放宽配额；解包前先完成校验，
+                    # 避免部分落盘后才发现不合规（PEP 706 明确不自动清理）。
+                    from core.security.archive_guard import (
+                        FRAMEWORK_UPDATE_LIMITS, validate_zip, safe_extract_zip)
+                    validate_zip(zf, FRAMEWORK_UPDATE_LIMITS)
+                    safe_extract_zip(zf, tmp_dir, FRAMEWORK_UPDATE_LIMITS,
+                                     prevalidated=True)
                 entries = [e for e in os.listdir(tmp_dir) if os.path.isdir(os.path.join(tmp_dir, e))]
                 src_root = os.path.join(tmp_dir, entries[0]) if entries[0] else tmp_dir
 

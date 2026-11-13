@@ -9,6 +9,37 @@
 
 ## 开发中
 
+### 归档解包统一加固（P0）
+
+- 新增 `core/security/archive_guard.py`：全站唯一的归档解包安全层，纯标准库、
+  自包含。在标准库 `zipfile` / `tarfile` 之上补齐四类独立校验——路径穿越与
+  `commonpath` containment 复核、文件名可控性（控制字符 / NTFS ADS 冒号 /
+  Windows 保留设备名 / 尾随点空格 / 深度与长度）、成员类型白名单（symlink /
+  device / FIFO 一律拒绝）、资源配额（条目数 / 总展开体积 / 单文件体积 /
+  压缩比 / Zip Bomb），以及 NFC + casefold 归一化碰撞检测（防 Windows / macOS
+  默认文件系统静默覆盖）。
+- **校验必须先于不可逆动作**：`validate_zip` / `validate_tar` 只校验不落盘，
+  调用方捕获 `SafeArchiveError` 并拒绝请求后，才允许移走旧插件目录、覆盖框架
+  代码文件，最后用 `prevalidated=True` 的 `safe_extract_*` 落盘（仍做 containment
+  复核）。此前插件上传是「先移走旧目录再 extractall」，校验失败会把旧版插件
+  一起弄丢。
+- 三档配额 `DEFAULT_LIMITS` / `FRAMEWORK_UPDATE_LIMITS` /
+  `SOURCE_TARBALL_LIMITS`：GitHub archive 与源码 tarball 单独放宽条目数和体积，
+  避免误伤正常发布包；单条压缩比只对 > 1 MiB 的成员判定，不误伤小文本文件。
+- 四个外部归档入口全部接入：插件包上传（`webui/plugins.py`）、框架自更新
+  （`webui/framework_ops.py`）、终端更新命令（`core/terminal/builtins.py`）、
+  zkg 机制包安装（`service/zkg/loader.py`）。zkg 加载器异常收口从只捕获
+  `TarError` 扩展到 `OSError` / `ValueError` / `EOFError`，Windows 特有问题
+  不再穿透。
+- **修复包池与索引不一致**：`repo/dist/index.json` 记录的 sha256 与
+  `repo/pool/*.tar.gz` 实际字节曾全部不符（15/15），触发 zkg 完整性强制
+  fail-closed 后会拒绝加载全部机制包。根因是重打包后 gzip header 的 mtime
+  变化导致字节与哈希改变，而包池未与索引同步提交。现已重新生成并逐包校验
+  15/15 一致。
+- 新增 `tests/test_archive_guard.py`（43 项）与 `docs/archive-guard.md`；
+  CI 中逐文件执行。`docs/index.md`、README 文档导航、`docs/best-practices.md`
+  同步补充安全章节，CI 中「repo/dist、repo/pool 不入库」的过时注释已修正。
+
 ### 安全加固（P0/P1 冲刺）
 
 - **OneBot 接入端默认值收紧（P0）**：`onebot.listen_host` 默认 `0.0.0.0` →
@@ -21,8 +52,10 @@
   账号自动打标；打标账号登录后除改密/登出/`/api/me` 外的所有管理接口返回 403
   （响应携带 `must_change_password: true`），改密成功自动清除标记。
 - **zkg 加载器完整性强制（fail closed）**：源索引未声明 sha256 的包拒绝加载
-  （杜绝「下载即执行」的无校验供应链）；tar 解包改走安全路径——优先标准库
-  `filter='data'`，旧 Python 回退逐成员校验（拒绝绝对路径 / `..` 穿越 / 链接成员）。
+  （杜绝「下载即执行」的无校验供应链）；tar 解包统一走
+  `core/security/archive_guard.py`（逐成员类型白名单 + canonical containment +
+  资源配额预检，再以 PEP 706 的 `filter='data'` 解包），详见
+  [archive-guard.md](docs/archive-guard.md)。
 - **框架自更新 fail-closed**：`/api/framework/update` 改为 require_super，且
   更新 ZIP 必须通过 sha256 校验——配置 `security.update_expected_sha256` 强制比对，
   未配置时默认拒绝更新（显式 `security.update_allow_unsigned: true` 可跳过，

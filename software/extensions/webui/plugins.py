@@ -134,6 +134,17 @@ def register(ctx):
                     except KeyError:
                         pass
 
+                # 显式前置守卫保留（快速拒绝 + 原有错误语义），以下共享校验补
+                # 盘符/ADS/保留名、NFC+casefold 碰撞、条目数/总展开体积/压缩比。
+                # 必须在移走旧目录之前完成，否则校验失败会把旧版插件一起弄丢。
+                from core.security.archive_guard import (
+                    SafeArchiveError, validate_zip, safe_extract_zip)
+                try:
+                    archive_stats = validate_zip(zf)
+                except SafeArchiveError as e:
+                    return jsonify({'code': 400, 'msg': f'插件包校验失败: {e}'}), 400
+                logger.info(f"插件包 [{plugin_name}] 校验通过: {archive_stats}")
+
                 backup_dir = None
                 if os.path.isdir(target_dir):
                     for old in os.listdir(plugins_dir):
@@ -149,7 +160,8 @@ def register(ctx):
 
                 os.makedirs(target_dir, exist_ok=True)
 
-                zf.extractall(target_dir)
+                # 已完成 validate_zip；这里只做 canonical containment 复核 + 落盘
+                safe_extract_zip(zf, target_dir, prevalidated=True)
 
                 entries = os.listdir(target_dir)
                 if len(entries) == 1 and os.path.isdir(os.path.join(target_dir, entries[0])):

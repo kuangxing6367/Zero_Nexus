@@ -82,7 +82,7 @@ python main.py
   - `sys` 服务 `38001`、`user` 服务 `38002`：同为探活通道
   - Web 管理后台 `8080`（由 `software/extensions/webui` 提供）
   - 状态面板 `8090`（`status_panel` 扩展：Web 状态页 + 只读 `/health` JSON）
-- Web 后台默认账号 **`admin` / `admin123`**（首次登录请修改密码）。
+- Web 后台首次种入 **`admin` / `admin123`**，账号被强制标记 `must_change_password`，改密前管理接口一律 403（见 [docs/database.md](docs/database.md)）。
 - 不需要 IM 接入端也能跑：在 `extensions.yaml` 开启 `http_inject`，用一条 `curl` 注入事件即可调试。
 
 也可以直接用脚本（自动建 venv、装依赖、启动）：
@@ -198,6 +198,7 @@ SQLite 与 MySQL 的查询 API 一致（`query` / `query_one` / `execute` / `ins
 | 加载器 | [docs/loader.md](docs/loader.md) |
 | API 参考 | [docs/api.md](docs/api.md) |
 | 安全传输 | [docs/transport.md](docs/transport.md) |
+| 归档解包安全 | [docs/archive-guard.md](docs/archive-guard.md) |
 | 接入 IM（OneBot） | [docs/connect-im.md](docs/connect-im.md) |
 | 部署上线 | [docs/deployment.md](docs/deployment.md) |
 | 最佳实践 | [docs/best-practices.md](docs/best-practices.md) |

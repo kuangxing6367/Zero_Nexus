@@ -75,7 +75,8 @@ server {
 
 ## 安全清单
 
-- 所有监听默认 `127.0.0.1`；公网暴露前务必设置 `onebot.access_token` 与 Web 后台强密码（默认 `admin / admin123`）。
+- 所有监听默认 `127.0.0.1`；公网暴露前务必设置 `onebot.access_token`。Web 后台种子账号 `admin / admin123` 带强制改密标记，上线前必须完成改密。
+- 框架自更新、插件包上传等外部归档入口统一经 `core/security/archive_guard.py` 校验，见 [archive-guard.md](archive-guard.md)；`security.update_expected_sha256` 未配置时自更新默认拒绝（fail-closed）。
 - 优先用反向代理 + TLS 终止，框架不直连公网。
 - `http_api` / `http_inject` 调试用扩展默认关闭，生产环境保持关闭或限制来源。
 - 数据库按需选 MySQL / PostgreSQL，并定期备份 `data/zernus.db` 或对应库。

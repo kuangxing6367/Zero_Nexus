@@ -27,6 +27,7 @@ Zeronus 是一个基于 Python 的**软件宿主框架**，采用三层架构（
 | 加载器 | [loader.md](loader.md) |
 | API 参考 | [api.md](api.md) |
 | 安全传输 | [transport.md](transport.md) |
+| 归档解包安全 | [archive-guard.md](archive-guard.md) |
 | 接入 IM（OneBot） | [connect-im.md](connect-im.md) |
 | 部署上线 | [deployment.md](deployment.md) |
 | 最佳实践 | [best-practices.md](best-practices.md) |
@@ -35,4 +36,5 @@ Zeronus 是一个基于 Python 的**软件宿主框架**，采用三层架构（
 
 - 文档中所有路径、配置键、API 名称均以**源码为准**（修改文档前请先核验源码）。
 - 监听地址默认均为 `127.0.0.1`；公网 / 局域网访问需显式放开并结合 `ssl` 与反向代理。
-- 默认管理员账号 `admin / admin123`，首次登录请改密（密码使用框架自带的 `pbkdf2_sha256`，不依赖可选的 bcrypt）。
+- 首次启动种入 `admin / admin123` 并立即标记 `must_change_password=1`：改密前除改密 / 登出 / `/api/me` 外的管理接口一律 403。密码使用框架自带的 `pbkdf2_sha256`，不依赖可选的 bcrypt。详见 [database.md](database.md)。
+- 所有处理外部归档的入口统一走 `core/security/archive_guard.py`，见 [archive-guard.md](archive-guard.md)。

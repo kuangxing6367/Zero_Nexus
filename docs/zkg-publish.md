@@ -67,7 +67,14 @@ dependencies = ["cron"]        # 启动时 zkg 自动从官方源拉取并加载
 ```
 
 加载端校验链：sha256（索引声明 vs 落盘包体）→ HMAC 签名（若索引带 signature，
-本机必须设 ZKG_SIGNING_KEY，不设则拒绝加载）→ api_version 兼容区间。
+本机必须设 ZKG_SIGNING_KEY，不设则拒绝加载）→ api_version 兼容区间 →
+**归档解包安全校验**（`core/security/archive_guard.py`：成员类型白名单 /
+路径 containment / 资源配额，见 [archive-guard.md](archive-guard.md)）。
+
+> **索引与包池必须同批提交。** `build.py` 每次重打包都会改变 gzip header 的
+> mtime，导致包体字节与 sha256 变化；若只更新 `index.json` 而 `pool/` 未同步，
+> 加载器会因 sha256 不符 fail-closed 拒绝全部机制包。`repo/dist` 与 `repo/pool`
+> 均已入库，不作为「可丢弃的构建产物」对待。
 
 手动方式：`python -m service.zkg`（CLI 查看源/包信息）。
 

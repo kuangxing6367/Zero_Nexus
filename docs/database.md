@@ -44,8 +44,8 @@ SQLite 与 MySQL 返回均为 `list[dict]`。常用接口：
 ## 建表与种子
 
 - 建表脚本：`sql/init.sql`（MySQL 5.7 风格，经 dialect 翻译后也适用于 SQLite）、`sql/init_mysql55.sql`。
-- 默认管理员账号：种子数据写入 `admin / admin123`，**哈希使用 `pbkdf2_sha256`**（标准库 `hashlib`，不依赖可选的 `bcrypt`）。
-- 启动自愈：若库为空，`core/storage/migrations.py::_ensure_admin_account` 会自动种入管理员账号；若遗留 bcrypt 哈希且未登录，会按默认密码重置并告警。
+- 默认管理员账号：种子数据写入 `admin / admin123` 并标记 `must_change_password=1`，**哈希使用 `pbkdf2_sha256`**（标准库 `hashlib`，不依赖可选的 `bcrypt`）。改密前除改密 / 登出 / `/api/me` 外的管理接口返回 403，改密成功后自动清除标记。
+- 启动自愈：若库为空，`core/storage/migrations.py::_ensure_admin_account` 会自动种入管理员账号并标记强制改密；仍在使用默认密码的存量账号补标记；**遗留 bcrypt 哈希且当前环境无 bcrypt、且从未登录过的账号，重置为随机一次性密码（仅日志打印一次）**，绝不退回已知默认密码；已登录过的账号只告警不静默改密。
 
 ## 时区
 

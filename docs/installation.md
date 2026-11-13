@@ -41,11 +41,11 @@ python main.py
 首次启动会自动：
 
 1. 生成 `config.yaml`（若缺失）；
-2. 建表（`data/zernus.db`，SQLite 默认）并写入默认管理员账号；
+2. 建表（`data/zernus.db`，SQLite 默认）并写入默认管理员账号（带强制改密标记）；
 3. 拉起内核、sys 服务、user 服务与已启用的软件扩展；
 4. 自愈缺失的可选依赖（受 `plugin.auto_install_deps_on_startup` 控制）。
 
-启动后访问 Web 后台：<http://127.0.0.1:8080>，使用 `admin / admin123` 登录。
+启动后访问 Web 后台：<http://127.0.0.1:8080>，使用 `admin / admin123` 登录并按提示立即改密（改密前管理接口一律 403，见 [getting-started.md](getting-started.md)）。
 
 ## 切换数据库
 

@@ -34,8 +34,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyyaml flask flask-cors waitress websockets requests pillow
 
-      # zkg 官方源索引与包池是构建产物（repo/dist、repo/pool 不入库），
-      # 部分测试依赖其存在，先构建一次。
+      # repo/dist 与 repo/pool 均已入库（包体 hash 与 index.json 需保持一致）；
+      # 这里重建一次，验证 build.py 可用且生成的索引与包池自洽。
+      # 部分测试依赖其存在。
       - name: Build zkg repo index
         run: python repo/build.py
 

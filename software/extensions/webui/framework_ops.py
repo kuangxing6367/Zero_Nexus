@@ -268,7 +268,18 @@ def register(ctx):
             tmp_dir = tempfile.mkdtemp(prefix='zernus_fw_')
             try:
                 with zipfile.ZipFile(tmp_zip, 'r') as zf:
-                    zf.extractall(tmp_dir)
+                    # 共享安全校验：盘符/ADS/保留名、NFC+casefold 碰撞、
+                    # 条目数/总展开体积/压缩比、canonical containment。
+                    # 必须在覆盖任何代码文件之前完成。
+                    from core.security.archive_guard import (
+                        SafeArchiveError, FRAMEWORK_UPDATE_LIMITS,
+                        validate_zip, safe_extract_zip)
+                    try:
+                        validate_zip(zf, FRAMEWORK_UPDATE_LIMITS)
+                    except SafeArchiveError as e:
+                        return jsonify({'code': 400, 'msg': f'更新包校验失败: {e}'}), 400
+                    safe_extract_zip(zf, tmp_dir, FRAMEWORK_UPDATE_LIMITS,
+                                     prevalidated=True)
 
                 # GitHub ZIP 内含一层 repo-tag/ 目录
                 entries = [e for e in os.listdir(tmp_dir) if os.path.isdir(os.path.join(tmp_dir, e))]

@@ -144,32 +144,20 @@ class Loader:
     def _safe_extract(self, tar_path: str, dest: str) -> bool:
         """安全解包：拒绝绝对路径 / 路径穿越 / 链接成员，防 tar 恶意写文件。
 
-        优先使用标准库 data filter（Python ≥3.11.4），旧版本回退为
-        逐成员白名单校验后再解包。任一成员不安全即整体拒绝（返回 False）。
+        统一走 core.security.archive_guard：逐成员类型白名单 + canonical
+        containment + 资源配额预检，再以 PEP 706 的 filter="data" 解包；
+        旧 Python 无 filter 参数时回退为已预检成员的白名单解包。
+        异常统一收口（原来只 catch TarError，Windows 特有问题会穿透）。
         """
+        from core.security.archive_guard import SafeArchiveError, safe_extract_tar
         try:
             with tarfile.open(tar_path) as tf:
-                try:
-                    tf.extractall(dest, filter="data")
-                    return True
-                except TypeError:
-                    pass  # 当前 Python 无 filter 参数
-                except tarfile.FilterError as e:
-                    logger.error(
-                        f"[loader] 包体 {os.path.basename(tar_path)} 含不安全成员，"
-                        f"已拒绝解包: {e}")
-                    return False
-                dest_real = os.path.realpath(dest)
-                for m in tf.getmembers():
-                    if not self._member_safe(m, dest_real):
-                        logger.error(
-                            f"[loader] 包体 {os.path.basename(tar_path)} 成员 "
-                            f"{m.name!r} 不安全（绝对路径/路径穿越/链接），已拒绝解包。")
-                        return False
-                tf.extractall(dest)
-                return True
-        except tarfile.TarError as e:
-            logger.error(f"[loader] 包体 {os.path.basename(tar_path)} 解包失败: {e}")
+                safe_extract_tar(tf, dest)
+            return True
+        except (SafeArchiveError, tarfile.TarError, OSError, ValueError, EOFError) as e:
+            logger.error(
+                f"[loader] 包体 {os.path.basename(tar_path)} 含不安全成员或解包失败，"
+                f"已拒绝解包: {e}")
             return False
 
     @staticmethod
