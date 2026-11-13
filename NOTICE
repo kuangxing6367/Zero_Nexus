@@ -4,11 +4,13 @@ Zeronus — 第三方组件与许可声明
 本项目采用双开源协议：MIT License 与 Apache License 2.0，任选其一适用。
 完整文本见仓库根 LICENSE 文件。
 
-统一资源控制面扩展（software/extensions/resource_control/）
-----------------------------------------------------------
-该扩展为本仓库原创代码，仅依赖 Python 标准库与 Zeronus 内核模块，
-未引入任何第三方库、字体、图标或二进制组件。
+统一资源控制面（control_plane/ 与 software/extensions/resource_control/）
+--------------------------------------------------------------------------
+均为本仓库原创代码。业务内核 control_plane/ **零框架依赖，仅使用 Python
+标准库**，不引入任何第三方库、字体、图标或二进制组件，可独立提取开源；
+框架壳只做 DB 适配与只读路由，同样仅依赖标准库与 Zeronus 内核模块。
 源码文件均标注 SPDX-License-Identifier: MIT OR Apache-2.0。
+不含硬编码生产 IP、密钥、明文口令或授权码校验。
 
 仓库内其他第三方组件
 --------------------

@@ -50,7 +50,8 @@ extensions:
     allow_shell: false
     allow_docker: false   # docker exec / PTY 与 shell 同级，默认禁
   resource_control:
-    # 统一资源控制面骨架：只有契约与槽位，不含任何业务实现。
-    # 启用后未注入实现时所有业务调用 fail-closed 拒绝；
+    # 仅为框架承载壳：把 control_plane 业务内核接到本进程 DB 与 HTTP。
+    # 业务内核在仓库顶层 control_plane/，零框架依赖，可独立运行。
+    # 壳不构造 ControlPlane（策略与适配器由部署方显式注入）；
     # 建表需显式调用 install(ctx)，不会在启动时自动执行。
     enabled: false

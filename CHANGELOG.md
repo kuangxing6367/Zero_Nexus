@@ -9,6 +9,58 @@
 
 ## 开发中
 
+### 统一资源控制面 · 第一阶段（取代上一版骨架抽象层）
+
+> 方向纠正：**框架只是个壳子**。上一版把主线做成了 Zeronus 扩展里的
+> 契约层 / 槽位注册表 / fail-closed 拒绝实现，那还是在堆框架抽象。
+> 本阶段把业务内核整体移出框架，壳层收敛到只剩两个文件。
+> 骨架的 `contracts.py` / `slots.py` / `schema.py` / `selftest.py`、
+> `docs/resource-control.md` 与 `tests/test_resource_control.py` 已删除，
+> 避免两套数据结构与两套契约并存（git 历史可回溯）。
+
+- 新增仓库顶层 **`control_plane/`**：零框架依赖、只用标准库，
+  不 import `core` / `service` / `software`，可单独运行、单独测试、
+  单独开源。业务内核与框架承载彻底分离。
+- **流程做实、策略留空**：`ControlPlane` 提供
+  `provision` / `deprovision` / `status` / `list_resources` / `tail_audit`
+  真实编排；`policy` 与 `adapters` 是构造参数传入的普通对象，
+  缺一个即抛 `DependencyMissing`，内核一行实现都不提供。
+  没有插件注册中心、没有槽位字典、没有事件总线、没有自动发现。
+- **身份由网关注入**：内核只接收 `actor` / `tenant` / `scopes` 普通参数，
+  不定义 Principal、不查库验身份、不写死任务授权；
+  `Policy.allowed()` 只接受布尔 `True`，`None` / `0` / `'yes'` / `1`
+  一律视为拒绝，防 truthy 值误放行。
+- **数据库薄且自治**：仍只有 `rc_resources` / `rc_audit` 两张表，
+  列名与上一版保持一致避免冲突；不跨库、不 JOIN 框架身份表、
+  不接受第二个连接；不建身份 / 角色 / 权限 / 套餐 / 计费表。
+  DDL 按方言显式分两份（MySQL 5.7 / SQLite），不走魔法翻译。
+- **真删与失败语义**：物理 `DELETE`，无软删列、无归档表；
+  台账写失败尽力回滚真实资源；外部删除失败时台账保留可重试；
+  审计写失败抛 `AuditWriteError` 并明确提示勿盲目重试。
+- **审计脱敏**：`scrub_detail()` 按键名递归脱敏，命中
+  password / secret / token / credential / api_key / private /
+  authorization / cookie 一律替换；detail 限 4000 字符；
+  内核不接触 spec 里的凭据，审计只写元数据。
+- 三种 Backend：`SqliteBackend`（标准库，真跑）、`MysqlBackend`
+  （DB-API 映射，不 import 驱动）、`FrameworkBackend`
+  （`ctx.db_*` → Backend 的薄适配）。CLI 四个子命令
+  init / health / list / audit，刻意不提供 provision / delete。
+- 框架壳 `software/extensions/resource_control/` 只剩
+  `main.py`（承载 store + 只读健康路由）与 `bridge.py`（DB 适配），
+  `register(ctx)` 不建表、不联网、不构造 `ControlPlane`、不注册事件；
+  `GET /api/control-plane/health` 复用框架鉴权。
+- 新增 `docs/control-plane.md`（阶段划分、分层、失败语义、已知限制）、
+  `control_plane/README.md`、`tests/test_control_plane.py`（CI 入口）；
+  更新文档导航、`extensions.yaml` 注释、`NOTICE`。
+- 自检 `python -m control_plane.selftest` **76 项**：真 SQLite 端到端闭环
+  （provision → status → list → deprovision）、SQL 参数化注入串原样存取、
+  真删无残留、审计脱敏与截断、依赖缺失拒绝、非布尔授权拒绝、
+  适配器失败与回滚、外部删除失败可重试、审计写失败语义、
+  CLI 四子命令真跑、源码卫生（零框架 import / 无硬编码 IP 与密钥）。
+  自检夹具 `_TestingOnly*` 只在 selftest.py 内，不注入生产路径。
+- 已知限制（未粉饰）：审计与业务写入非同一事务；无真实网关 / 加密 /
+  适配器实现；MySQL 未连真库验证；CLI 不提供写操作。
+
 ### 可复现构建（更正前一条说明）
 
 > 上一条归档加固里把 pool 抖动描述为「包池与索引未同步提交」，
@@ -28,33 +80,6 @@
 - 文档更正：`docs/zkg-publish.md`、`docs/best-practices.md`、CI 注释改为
   「索引不入库、构建可复现、发布时索引与包池同批上传」。
 - 验收：跑完 CI 全量 28 个测试脚本后 pool 字节未变化，工作区不再被污染。
-
-### 统一资源控制面（骨架）
-
-- 新增官方扩展 `software/extensions/resource_control/`：**只有契约与槽位，
-  没有业务实现**。把身份、授权、凭据保险库、资源适配器、审计定义为五个
-  显式槽位，让多种资源类型共用同一套接入边界。默认关闭
-  （`extensions.yaml → resource_control.enabled: false`）。
-- **数据库刻意保持薄且自治**：只有 `rc_resources` / `rc_audit` 两张表；
-  不建身份、角色、权限、套餐、计费表；不跨库、不 JOIN 框架 `users` /
-  `admin_users` / `perm_*`；不接受第二个数据库连接或连接串。身份由统一
-  网关注入 claims，内核只消费 `Principal`，将来接网关授权不动表结构。
-- **不写死授权**：`AuthorizationPolicy` 完全由实现方注入，内核只消费
-  `Decision`，不内置角色模型或权限矩阵。
-- **加密逻辑留空**：`CredentialVault` 只定义 `seal` / `open` 两个方法与
-  失败语义（失败必须抛异常，禁止静默返回密文或空串）。算法、密钥派生、
-  信封结构、轮换与解锁策略均由部署方决定，本仓库不预设。
-- **删除即真删**：DDL 无软删列、不归档；审计只记元数据不记凭据明文。
-- **Fail-closed**：槽位显式 `bind()`，绑定时做接口形状校验；未配置返回
-  拒绝型实现，任何调用抛 `SlotUnavailable`，不静默降级到内置默认算法；
-  `unbind()` 后立即回到拒绝态。`register(ctx)` 只装配注册表与只读状态
-  路由，不自动建表、不联网、不启动监听、不注册事件总线。
-- 显式 `install(ctx)` 幂等建表（走 `ctx.create_table` 方言适配）；
-  自检 `software/extensions/resource_control/selftest.py`（46 项，不启动
-  框架、不连库、不联网）与 CI 入口 `tests/test_resource_control.py`。
-- 新增 `docs/resource-control.md`、扩展 README、仓库根 `NOTICE`；
-  文档导航同步补充。源码全部带 `SPDX-License-Identifier: MIT OR Apache-2.0`，
-  沿用仓库双开源协议（MIT / Apache-2.0 任选其一），无授权码或商业许可校验。
 
 ### 归档解包统一加固（P0）
 
