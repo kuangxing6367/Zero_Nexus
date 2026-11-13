@@ -16,9 +16,11 @@
   `core/security/archive_guard.py`：先 `validate_*` 只校验不落盘、捕获
   `SafeArchiveError` 拒绝请求，再执行移走旧目录等不可逆动作，最后用
   `prevalidated=True` 的 `safe_extract_*` 落盘。详见 [archive-guard.md](archive-guard.md)。
-- 发布 zkg 包时 `index.json` 与 `pool/*.tar.gz` 必须同步提交；重打包会改变
-  gzip header 的 mtime，包体字节与 sha256 随之变化，索引滞后会导致加载器
-  fail-closed 拒绝全部包。
+- zkg 包构建是**可复现**的（`repo/build.py` 固定 tar 元数据与 gzip mtime）；
+  同一份源码重复 build 字节不变，改打包逻辑后必须跑
+  `python tests/test_repro_build.py` 守住这个性质。
+- 发布时 `dist/index.json`（不入库，构建生成）与 `pool/*.tar.gz`（入库）
+  必须同批上传：索引滞后会让加载器 fail-closed 拒绝全部包。先传 pool 再传 index。
 
 ## 依赖与启动
 

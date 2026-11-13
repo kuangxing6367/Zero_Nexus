@@ -34,9 +34,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyyaml flask flask-cors waitress websockets requests pillow
 
-      # repo/dist 与 repo/pool 均已入库（包体 hash 与 index.json 需保持一致）；
-      # 这里重建一次，验证 build.py 可用且生成的索引与包池自洽。
-      # 部分测试依赖其存在。
+      # repo/dist 被 .gitignore 忽略（索引不入库），repo/pool 已入库；
+      # 这里重建一次生成索引供测试使用。构建是可复现的，
+      # 重建不会改变 pool 字节（tests/test_repro_build.py 会守这个性质）。
       - name: Build zkg repo index
         run: python repo/build.py
 

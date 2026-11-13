@@ -9,6 +9,53 @@
 
 ## 开发中
 
+### 可复现构建（更正前一条说明）
+
+> 上一条归档加固里把 pool 抖动描述为「包池与索引未同步提交」，
+> 该表述不准确，以此条为准：`repo/dist/` 被 `.gitignore` 忽略，
+> **索引本来就不入库**，不存在「索引滞后」。
+
+- 根因：`repo/build.py` 用 `tarfile.open(path, "w:gz")`，gzip header 写入
+  当前时间，TarInfo 还携带源文件 mtime 与运行账号 uid/gid。同一份源码
+  每次 build 都得到不同字节的 tar.gz 与 sha256，导致 `pool/*.tar.gz`
+  入库后，任何一次构建（含 CI 与 `tests/test_pkg_signature.py`）都会把
+  工作区 15 个包弄脏。
+- 修复：改用内存 USTAR + `_normalize_tarinfo`（mtime=0 / uid=gid=0 /
+  空 uname、gname / 文件 0644、目录 0755）+ `GzipFile(mtime=0)` 且
+  不写原始文件名。**同一份源码重复构建字节完全一致**。
+- 新增 `tests/test_repro_build.py`（9 项）：间隔 1.1 秒两次构建字节一致、
+  索引 15/15 相符、tar 元数据全固定、gzip 不写 FNAME。
+- 文档更正：`docs/zkg-publish.md`、`docs/best-practices.md`、CI 注释改为
+  「索引不入库、构建可复现、发布时索引与包池同批上传」。
+- 验收：跑完 CI 全量 28 个测试脚本后 pool 字节未变化，工作区不再被污染。
+
+### 统一资源控制面（骨架）
+
+- 新增官方扩展 `software/extensions/resource_control/`：**只有契约与槽位，
+  没有业务实现**。把身份、授权、凭据保险库、资源适配器、审计定义为五个
+  显式槽位，让多种资源类型共用同一套接入边界。默认关闭
+  （`extensions.yaml → resource_control.enabled: false`）。
+- **数据库刻意保持薄且自治**：只有 `rc_resources` / `rc_audit` 两张表；
+  不建身份、角色、权限、套餐、计费表；不跨库、不 JOIN 框架 `users` /
+  `admin_users` / `perm_*`；不接受第二个数据库连接或连接串。身份由统一
+  网关注入 claims，内核只消费 `Principal`，将来接网关授权不动表结构。
+- **不写死授权**：`AuthorizationPolicy` 完全由实现方注入，内核只消费
+  `Decision`，不内置角色模型或权限矩阵。
+- **加密逻辑留空**：`CredentialVault` 只定义 `seal` / `open` 两个方法与
+  失败语义（失败必须抛异常，禁止静默返回密文或空串）。算法、密钥派生、
+  信封结构、轮换与解锁策略均由部署方决定，本仓库不预设。
+- **删除即真删**：DDL 无软删列、不归档；审计只记元数据不记凭据明文。
+- **Fail-closed**：槽位显式 `bind()`，绑定时做接口形状校验；未配置返回
+  拒绝型实现，任何调用抛 `SlotUnavailable`，不静默降级到内置默认算法；
+  `unbind()` 后立即回到拒绝态。`register(ctx)` 只装配注册表与只读状态
+  路由，不自动建表、不联网、不启动监听、不注册事件总线。
+- 显式 `install(ctx)` 幂等建表（走 `ctx.create_table` 方言适配）；
+  自检 `software/extensions/resource_control/selftest.py`（46 项，不启动
+  框架、不连库、不联网）与 CI 入口 `tests/test_resource_control.py`。
+- 新增 `docs/resource-control.md`、扩展 README、仓库根 `NOTICE`；
+  文档导航同步补充。源码全部带 `SPDX-License-Identifier: MIT OR Apache-2.0`，
+  沿用仓库双开源协议（MIT / Apache-2.0 任选其一），无授权码或商业许可校验。
+
 ### 归档解包统一加固（P0）
 
 - 新增 `core/security/archive_guard.py`：全站唯一的归档解包安全层，纯标准库、
@@ -31,11 +78,9 @@
   zkg 机制包安装（`service/zkg/loader.py`）。zkg 加载器异常收口从只捕获
   `TarError` 扩展到 `OSError` / `ValueError` / `EOFError`，Windows 特有问题
   不再穿透。
-- **修复包池与索引不一致**：`repo/dist/index.json` 记录的 sha256 与
-  `repo/pool/*.tar.gz` 实际字节曾全部不符（15/15），触发 zkg 完整性强制
-  fail-closed 后会拒绝加载全部机制包。根因是重打包后 gzip header 的 mtime
-  变化导致字节与哈希改变，而包池未与索引同步提交。现已重新生成并逐包校验
-  15/15 一致。
+- 包池重打包并逐包校验 15/15 与索引一致。**注：本条对根因的描述已被
+  上方「可复现构建」更正** —— 索引 `repo/dist/index.json` 不入库，
+  真正原因是打包不可复现；此处仅记录当次重新生成的结果。
 - 新增 `tests/test_archive_guard.py`（43 项）与 `docs/archive-guard.md`；
   CI 中逐文件执行。`docs/index.md`、README 文档导航、`docs/best-practices.md`
   同步补充安全章节，CI 中「repo/dist、repo/pool 不入库」的过时注释已修正。

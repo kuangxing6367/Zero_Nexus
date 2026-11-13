@@ -1,5 +1,10 @@
 """repo/build.py —— 生成本地仓库索引与包体。
 
+**可复现构建**：包体字节与构建时间、运行账号、源文件 mtime 无关，
+同一份源码重复 build 得到完全相同的 tar.gz 与 sha256。这样 pool/*.tar.gz
+可以安全入库、跑测试也不会把工作区弄脏。改动打包逻辑时务必保持此性质，
+并跑 ``python repo/build.py`` 两次对比哈希。
+
 产出（每个源都暴露一份/多份索引，Resolver 自动合并多份）：
     repo/dist/index.json          主索引（可含 "splits" 指向分片）
     repo/dist/indices/index-*.json  索引分片（--split 时生成）
@@ -16,8 +21,10 @@
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import hmac
+import io
 import json
 import os
 import tarfile
@@ -71,6 +78,44 @@ def _pkg_files(pkg_dir: str) -> list:
     return out
 
 
+def _normalize_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    """抹掉所有随时间/环境变化的元数据，保证包体字节可复现。
+
+    固定 mtime=0、uid/gid=0、空 uname/gname、文件 0644 / 目录 0755。
+    不这样处理的话，源文件 mtime 与运行账号会渗进 tar 头，导致
+    「同一份源码、两次 build」得到不同字节的 tar.gz。
+    """
+    info.mtime = 0
+    info.uid = 0
+    info.gid = 0
+    info.uname = ''
+    info.gname = ''
+    info.mode = 0o644 if info.isfile() else 0o755
+    return info
+
+
+def _write_tarball(tar_path: str, pkg_dir: str, arcname: str) -> None:
+    """确定性打包：USTAR + 规范化 TarInfo + gzip mtime=0、不写原文件名。
+
+    ``tarfile.open(path, "w:gz")`` 会把当前时间写进 gzip header，
+    每次构建字节都不同；这里改用内存缓冲 + GzipFile(mtime=0) 显式控制。
+    """
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode='w', format=tarfile.USTAR_FORMAT) as tf:
+        for fn in _pkg_files(pkg_dir):
+            tf.add(
+                os.path.join(pkg_dir, fn),
+                arcname=os.path.join(arcname, fn),
+                recursive=False,
+                filter=_normalize_tarinfo,
+            )
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename='', mode='wb', fileobj=buf, mtime=0) as gz:
+        gz.write(raw.getvalue())
+    with open(tar_path, 'wb') as f:
+        f.write(buf.getvalue())
+
+
 def _build_package_list() -> list:
     packages = []
     for entry in sorted(os.listdir(REPO_ROOT)):
@@ -86,10 +131,7 @@ def _build_package_list() -> list:
         pool_dir = os.path.join(REPO_ROOT, "pool")
         os.makedirs(pool_dir, exist_ok=True)
         tar_path = os.path.join(pool_dir, f"{arcname}.tar.gz")
-        with tarfile.open(tar_path, "w:gz") as tf:
-            for fn in _pkg_files(pkg_dir):
-                tf.add(os.path.join(pkg_dir, fn),
-                       arcname=os.path.join(arcname, fn))
+        _write_tarball(tar_path, pkg_dir, arcname)
         packages.append({
             "id": pkg["id"],
             "name": pkg.get("name", pkg["id"]),

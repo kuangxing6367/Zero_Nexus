@@ -1,0 +1,24 @@
+Zeronus — 第三方组件与许可声明
+================================
+
+本项目采用双开源协议：MIT License 与 Apache License 2.0，任选其一适用。
+完整文本见仓库根 LICENSE 文件。
+
+统一资源控制面扩展（software/extensions/resource_control/）
+----------------------------------------------------------
+该扩展为本仓库原创代码，仅依赖 Python 标准库与 Zeronus 内核模块，
+未引入任何第三方库、字体、图标或二进制组件。
+源码文件均标注 SPDX-License-Identifier: MIT OR Apache-2.0。
+
+仓库内其他第三方组件
+--------------------
+- 前端依赖（software/extensions/webui/frontend/）由 package.json /
+  package-lock.json 声明，其各自许可由对应上游包携带。
+- Python 可选依赖由 requirements.txt 声明，其各自许可由对应上游包携带。
+- 机制包仓库（repo/）为本仓库自带的纯标准库示例实现，无外部代码。
+
+版权
+----
+Copyright (c) Zeronus contributors
+
+本项目允许修改、商用与二次开发；分发时请保留原始版权声明与许可声明。

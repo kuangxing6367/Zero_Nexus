@@ -71,10 +71,13 @@ dependencies = ["cron"]        # 启动时 zkg 自动从官方源拉取并加载
 **归档解包安全校验**（`core/security/archive_guard.py`：成员类型白名单 /
 路径 containment / 资源配额，见 [archive-guard.md](archive-guard.md)）。
 
-> **索引与包池必须同批提交。** `build.py` 每次重打包都会改变 gzip header 的
-> mtime，导致包体字节与 sha256 变化；若只更新 `index.json` 而 `pool/` 未同步，
-> 加载器会因 sha256 不符 fail-closed 拒绝全部机制包。`repo/dist` 与 `repo/pool`
-> 均已入库，不作为「可丢弃的构建产物」对待。
+> **可复现构建 + 索引与包池同批更新。** `build.py` 固定 tar 成员
+> mtime/uid/gid 与 gzip mtime=0，同一份源码重复构建字节完全一致；
+> 因此 `pool/*.tar.gz` 可以安全入库，跑 CI / 测试也不会把工作区弄脏。
+> 注意 `repo/dist/` 被 `.gitignore` 忽略、**索引不入库**，由构建时生成；
+> 发布时必须把 `dist/index.json` 与 `pool/` 同批上传，否则加载器会因
+> sha256 不符 fail-closed 拒绝全部机制包。先传 pool 再传 index，
+> 保证索引先到时不会出现包 404。
 
 手动方式：`python -m service.zkg`（CLI 查看源/包信息）。
 
