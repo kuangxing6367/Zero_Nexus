@@ -9,6 +9,57 @@
 
 ## 开发中
 
+### 统一资源控制面 · 第二阶段 A（工程加固）
+
+> 只修工程正确性与可验证性，**没有新增任何业务逻辑**。
+> 真实网关 claims、凭据保险库、资源适配器、套餐计费、前端仍按既定约束
+> 由部署方决定（第二阶段 B）。
+
+- **修复一个会误删已有资源的缺陷**：第一阶段 `provision` 把台账写入失败
+  一律当成「刚创建的资源没登记上」，无条件调用
+  `adapter.deprovision(external_id)` 回滚。若失败原因是
+  `UNIQUE(kind, external_id)` 冲突（适配器 ID 复用 / 请求重放 / 状态漂移），
+  该回滚会**删掉台账里已有资源对应的真实实例**，而原记录仍在。
+  现在 `store.py` 把唯一键冲突单独识别为 `DuplicateResource`
+  （异常特征匹配后再查一次台账确认），编排层抛 `DuplicateExternalId`、
+  写 `failed` 审计，**不碰真实资源**。真 SQLite 与 DB-API 后端均有回归。
+- **台账与终态审计同事务**：`SqliteBackend`（`BEGIN IMMEDIATE`）与
+  `MysqlBackend`（显式 `BEGIN`，不依赖连接 autocommit）提供
+  `transaction()`；`add_resource_with_audit` / `delete_resource_with_audit`
+  在成功路径一次原子提交，任一步失败两者一起回滚。嵌套事务抛
+  `TransactionError`，不做 savepoint 伪装。第一阶段「审计与业务写入
+  非同一事务」的限制在支持事务的后端上已消除。
+- **后端能力显式声明，不假装原子**：`capabilities()` 与
+  `health()['capabilities']` 暴露 `atomic_audit`。`FrameworkBackend`
+  明确 `supports_transactions = False`（`ctx.db_*` 每次可能取不同池连接，
+  跨调用拼事务无效）；降级时台账先落地、审计后写，审计 detail 带
+  `atomic=False` 并输出 warning，审计失败抛 `AuditCommitError`
+  （含义是「台账已落地」，不得据此回滚真实资源）。
+- **失败语义重写**：授权拒绝永远抛 `PolicyDenied`，补偿审计故障只记日志、
+  不覆盖原始失败原因；原子后端审计写失败 → 台账回滚 + 清理外部资源 +
+  `failed` 审计；非原子后端审计写失败 → `AuditWriteError` 且保留已落地台账；
+  删除路径本地提交失败 → 明确提示「真实资源已删、台账已回滚，人工核对，
+  不要直接重试」。事务只覆盖本地库，这条边界写进所有失败文案。
+- **MySQL 代码路径真验证（非真服务端）**：新增
+  `tests/test_control_plane_tx.py`，用 DB-API 兼容引擎（底层标准库
+  sqlite3，`%s` → `?`）真执行 `MysqlBackend` 发出的每条 SQL，验证参数绑定、
+  SQL 文本无拼接值字面量、BEGIN/COMMIT/ROLLBACK 次数与时机、游标全部回收、
+  事务内故障整体回滚、`ControlPlane` 经该后端跑完整生命周期闭环。
+  MySQL 服务端的 DDL / 隔离级别 / 锁行为仍需上线前真库实测，未粉饰。
+- **壳层只读可观测**：`expose_readonly_api` 默认关闭，开启后额外注册
+  `GET control-plane/resources` 与 `GET control-plane/audit`（复用框架鉴权、
+  limit 夹 1..1000、审计已脱敏）。「谁能看」属于授权策略，壳不写死。
+  `FrameworkBackend` 的降级声明与只读路由一同纳入框架壳回归。
+- 表结构未改动，`SCHEMA_VERSION` 仍为 2；DDL 与列名保持兼容。
+- 重写 `docs/control-plane.md`（阶段划分、事务矩阵、失败语义、
+  缺陷修复说明、已知限制）、两个 README；更新文档导航与 `extensions.yaml`。
+- 验证（本地真跑）：业务内核自检 **116 项**、事务/MySQL 路径 **45 项**、
+  框架壳 **29 项**，全部 0 失败；全量 py_compile 0 错误；YAML 通过；
+  CI 全量 **30** 个测试脚本 0 失败；跑完全量测试后 pool 字节未变化；
+  敏感信息与硬编码生产 IP 扫描无命中。
+- 仍存限制：外部真实资源不在事务内；没有真实网关 / 加密 / 适配器实现；
+  CLI 不提供写操作；MySQL 真服务端未验证；非原子后端没有自动审计补偿。
+
 ### 统一资源控制面 · 第一阶段（取代上一版骨架抽象层）
 
 > 方向纠正：**框架只是个壳子**。上一版把主线做成了 Zeronus 扩展里的

@@ -4,18 +4,20 @@
 
     python -m control_plane.selftest
 
-不启动 Zeronus 框架、不连 MySQL、不联网。测试用的 policy / adapter 是
-**本文件内的 `_TestingOnly*` 类**，不导出、不注入生产路径、不作为默认实现；
-生产里缺依赖一律抛 DependencyMissing。
+不启动 Zeronus 框架、不连真实 MySQL 服务端、不联网。测试用的
+policy / adapter / backend 是**本文件内的 `_TestingOnly*` 类**，不导出、
+不注入生产路径、不作为默认实现；生产里缺依赖一律抛 DependencyMissing。
 
 覆盖：依赖缺失拒绝、授权拒绝（含非布尔返回值）、适配器缺失与失败、
-台账写入失败回滚、真删无残留、审计脱敏、SQL 参数化、CLI 真跑、源码卫生。
+原子事务提交/回滚、重复 external_id 不误删已有真实资源、真删无残留、
+审计脱敏、SQL 参数化、后端能力声明与显式降级、CLI 真跑、源码卫生。
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -26,11 +28,12 @@ if ROOT not in sys.path:
 
 from control_plane.control import (  # noqa: E402
     AdapterUnavailable, AuditWriteError, ControlPlane, ControlPlaneError,
-    DependencyMissing, PolicyDenied, ResourceNotFound,
+    DependencyMissing, DuplicateExternalId, PolicyDenied, ResourceNotFound,
 )
 from control_plane.store import (  # noqa: E402
-    DDL_MYSQL, DDL_SQLITE, MysqlBackend, ResourceStore, SqliteBackend,
-    StoreError, scrub_detail,
+    AuditCommitError, DDL_MYSQL, DDL_SQLITE, DuplicateResource,
+    MysqlBackend, ResourceStore, SqliteBackend, StoreError,
+    TransactionError, scrub_detail,
 )
 
 _passed = 0
@@ -80,10 +83,13 @@ class _TestingOnlyAdapter:
         self.seq = 0
         self.fail_provision = False
         self.fail_deprovision = False
+        self.fixed_id = None
 
     def provision(self, spec):
         if self.fail_provision:
             raise RuntimeError('外部系统不可用')
+        if self.fixed_id is not None:
+            return self.fixed_id
         self.seq += 1
         eid = f'ext-{self.seq:03d}'
         self.created.append((eid, dict(spec)))
@@ -107,15 +113,42 @@ class _TestingOnlyAdapters:
 
 
 class _TestingOnlyBrokenStore(ResourceStore):
-    """台账写入失败，用于验证真实资源回滚。"""
+    """原子写入失败（模拟台账不可写），用于验证真实资源回滚。"""
 
-    def add_resource(self, *a, **kw):
-        raise StoreError('模拟台账写失败')
+    def add_resource_with_audit(self, *a, **kw):
+        raise StoreError('模拟台账原子写失败')
 
 
-class _TestingOnlyBrokenAuditStore(ResourceStore):
-    def append_audit(self, *a, **kw):
-        raise StoreError('模拟审计写失败')
+class _TestingOnlyFailAuditBackend(SqliteBackend):
+    """事务内审计 INSERT 失败，用于真验证事务回滚（不是抛异常假装）。
+
+    只拦事务内的审计写入，事务外的补偿审计仍可落库，这样能真验证
+    「原子失败 → 整体回滚 → 补偿审计独立写入」这条完整路径。
+    """
+
+    def __init__(self, path=':memory:'):
+        super().__init__(path)
+        self.fail = False
+
+    def insert(self, sql, params=None):
+        if self.fail and self.in_transaction and 'rc_audit' in sql:
+            raise sqlite3.OperationalError('模拟事务内审计表不可写')
+        return super().insert(sql, params)
+
+
+class _TestingOnlyNoTxBackend(SqliteBackend):
+    """声明不支持事务，用于验证显式降级而非静默假装原子。"""
+
+    supports_transactions = False
+
+    def __init__(self, path=':memory:'):
+        super().__init__(path)
+        self.fail_audit = False
+
+    def insert(self, sql, params=None):
+        if self.fail_audit and 'rc_audit' in sql:
+            raise sqlite3.OperationalError('模拟审计表不可写')
+        return super().insert(sql, params)
 
 
 def _new_store():
@@ -163,6 +196,15 @@ check('DDL 只声明两张表',
       and len([s for s in DDL_SQLITE if 'CREATE TABLE' in s]) == 2)
 check('MySQL DDL 为 5.7 风格且带唯一约束',
       'AUTO_INCREMENT' in DDL_MYSQL[0] and 'UNIQUE KEY' in DDL_MYSQL[0])
+check('持久化层提供事务与原子写入口',
+      'def transaction(' in _src['store.py']
+      and 'add_resource_with_audit' in _src['store.py']
+      and 'delete_resource_with_audit' in _src['store.py'])
+check('后端能力对外显式声明（不假装原子）',
+      'atomic_audit' in _src['store.py'] and 'supports_transactions' in _src['store.py'])
+check('编排层区分重复标识与写入失败',
+      'DuplicateResource' in _src['control.py']
+      and 'AuditCommitError' in _src['control.py'])
 
 # ---------------------------------------------------------------- 2. 持久化
 print('== 2. 持久化与幂等 ==')
@@ -171,6 +213,8 @@ check('建表幂等（第二次不报错）', store.install() == len(DDL_SQLITE)
 check('health 两张表可用', all(store.health()['tables'].values()))
 check('初始资源 / 审计均为 0',
       store.count_resources() == 0 and store.count_audit() == 0)
+check('SqliteBackend 声明原子能力', store.capabilities()['atomic_audit'] is True)
+check('health 暴露能力字段', store.health()['capabilities']['backend'] == 'SqliteBackend')
 
 evil = "x' OR 1=1 --"
 store.add_resource('hosting', evil, 'actor-a', 't1')
@@ -178,11 +222,86 @@ check('注入串作为 external_id 被参数化（不改变表记录数）',
       store.count_resources() == 1)
 check('注入串能原样取回',
       store.get_resource('hosting', evil).external_id == evil)
+expect_raises('重复 external_id 抛 DuplicateResource', DuplicateResource,
+              lambda: store.add_resource('hosting', evil, 'actor-b', 't1'))
+check('重复登记不覆盖原记录',
+      store.get_resource('hosting', evil).owner_subject == 'actor-a')
 store.delete_resource('hosting', evil)
 check('真删后无残留', store.count_resources() == 0)
 check('真删无归档表', len([s for s in DDL_SQLITE if 'CREATE TABLE' in s]) == 2)
 
-print('== 3. 审计脱敏 ==')
+print('== 3. 事务边界 ==')
+tx_backend = SqliteBackend(':memory:')
+tx_store = ResourceStore(tx_backend)
+tx_store.install()
+check('事务外 in_transaction 为 False', tx_backend.in_transaction is False)
+
+
+def _nested_tx():
+    with tx_backend.transaction():
+        with tx_backend.transaction():
+            pass
+
+
+expect_raises('嵌套事务明确拒绝', TransactionError, _nested_tx)
+check('嵌套失败后事务状态已复位', tx_backend.in_transaction is False)
+
+
+def _boom_tx():
+    with tx_backend.transaction():
+        tx_backend.insert(
+            "INSERT INTO `rc_resources` (`kind`,`external_id`,`owner_subject`,`tenant`) "
+            "VALUES (%s,%s,%s,%s)", ('hosting', 'rollback-1', 'u1', None))
+        raise RuntimeError('boom')
+
+
+expect_raises('事务内异常向上冒泡', RuntimeError, _boom_tx)
+check('事务异常后台账已回滚', tx_store.count_resources() == 0)
+check('回滚后连接可用', tx_store.count_resources() == 0)
+
+res_atomic = tx_store.add_resource_with_audit('hosting', 'atomic-1', 'u1', 't1', 'u1')
+check('原子写入返回资源记录', res_atomic.external_id == 'atomic-1')
+check('原子写入后台账与审计各 1 条',
+      tx_store.count_resources() == 1 and tx_store.count_audit() == 1)
+check('原子成功审计 outcome=ok 且不带 atomic=False',
+      tx_store.tail_audit()[0].outcome == 'ok'
+      and tx_store.tail_audit()[0].detail.get('atomic') is not False)
+check('原子删除后台账与审计一致',
+      tx_store.delete_resource_with_audit('hosting', 'atomic-1', 'u1') is True
+      and tx_store.count_resources() == 0 and tx_store.count_audit() == 2)
+
+print('== 3b. 原子写入失败必须整体回滚 ==')
+fail_backend = _TestingOnlyFailAuditBackend()
+fail_store = ResourceStore(fail_backend)
+fail_store.install()
+fail_backend.fail = True
+expect_raises('审计 INSERT 失败导致原子写失败', StoreError,
+              lambda: fail_store.add_resource_with_audit(
+                  'hosting', 'atomic-fail-1', 'u1', None, 'u1'))
+check('事务回滚后台账无残留', fail_store.count_resources() == 0)
+check('事务回滚后审计也无残留', fail_store.count_audit() == 0)
+fail_backend.fail = False
+
+print('== 3c. 不支持事务的后端显式降级 ==')
+notx_backend = _TestingOnlyNoTxBackend()
+notx_store = ResourceStore(notx_backend)
+notx_store.install()
+check('capabilities 明确 atomic_audit=False',
+      notx_store.capabilities()['atomic_audit'] is False)
+check('health 也显示 atomic_audit=False',
+      notx_store.health()['capabilities']['atomic_audit'] is False)
+notx_store.add_resource_with_audit('hosting', 'notx-1', 'u1', None, 'u1')
+check('降级路径台账已落地', notx_store.count_resources() == 1)
+check('降级路径审计标记 atomic=False',
+      notx_store.tail_audit()[0].detail.get('atomic') is False)
+notx_backend.fail_audit = True
+expect_raises('降级路径审计失败抛 AuditCommitError', AuditCommitError,
+              lambda: notx_store.add_resource_with_audit(
+                  'hosting', 'notx-2', 'u1', None, 'u1'))
+check('AuditCommitError 时台账已落地（不可回滚真实资源）',
+      notx_store.count_resources() == 2)
+
+print('== 4. 审计脱敏 ==')
 red = scrub_detail({'password': 'hunter2', 'api_key': 'abc123',
                     'note': 'ok', 'nested': {'token': 'zzz', 'v': 1}})
 parsed = json.loads(red)
@@ -193,8 +312,8 @@ check('普通字段保留', parsed['note'] == 'ok' and parsed['nested']['v'] == 
 check('超长 detail 被截断', len(scrub_detail({'blob': 'x' * 9000})) <= 4000)
 check('空 detail 返回空串', scrub_detail(None) == '' and scrub_detail({}) == '')
 
-# ---------------------------------------------------------------- 4. 依赖与授权
-print('== 4. fail-closed 与授权 ==')
+# ---------------------------------------------------------------- 5. 依赖与授权
+print('== 5. fail-closed 与授权 ==')
 expect_raises('缺 store 构造即拒绝', DependencyMissing,
               lambda: ControlPlane(None, policy=_TestingOnlyPolicy(),
                                    adapters=_TestingOnlyAdapters()))
@@ -229,8 +348,21 @@ expect_raises('actor 为空被拒绝', ControlPlaneError,
 expect_raises('spec 非 Mapping 被拒绝', ControlPlaneError,
               lambda: cp3.provision('hosting', 'not-a-map', actor='u1'))
 
-# ---------------------------------------------------------------- 5. 完整闭环
-print('== 5. 资源生命周期闭环 ==')
+
+class _TestingOnlyDenyAuditStore(ResourceStore):
+    def append_audit(self, *a, **kw):
+        raise StoreError('模拟审计不可用')
+
+
+deny_store = _TestingOnlyDenyAuditStore(SqliteBackend(':memory:'))
+deny_store.install()
+cp_deny = ControlPlane(deny_store, policy=_TestingOnlyPolicy(False),
+                       adapters=_TestingOnlyAdapters(_TestingOnlyAdapter()))
+expect_raises('审计故障时授权拒绝仍抛 PolicyDenied（不被掩盖）', PolicyDenied,
+              lambda: cp_deny.provision('hosting', {}, actor='u1'))
+
+# ---------------------------------------------------------------- 6. 完整闭环
+print('== 6. 资源生命周期闭环 ==')
 cp, adapter, st = _new_cp()
 secret_spec = {'domain': 'a.example', 'password': 'plain-secret-DO-NOT-LOG'}
 res = cp.provision('hosting', secret_spec, actor='sub-123', tenant='t1',
@@ -263,7 +395,22 @@ check('删除产生 ok 审计',
 expect_raises('删除后再删抛 ResourceNotFound', ResourceNotFound,
               lambda: cp.deprovision('hosting', res.external_id, actor='sub-123'))
 
-print('== 6. 失败路径与回滚 ==')
+print('== 7. 重复 external_id 绝不误删已有资源 ==')
+cp8, ad8, st8 = _new_cp()
+first = cp8.provision('hosting', {}, actor='owner-a')
+ad8.fixed_id = first.external_id
+expect_raises('适配器复用已登记标识抛 DuplicateExternalId', DuplicateExternalId,
+              lambda: cp8.provision('hosting', {}, actor='owner-b'))
+check('未调用 deprovision（已有真实资源未被删）', ad8.deleted == [])
+check('原台账记录仍在且归属未变',
+      st8.get_resource('hosting', first.external_id).owner_subject == 'owner-a')
+check('重复标识写 failed 审计',
+      any(e.outcome == 'failed' and e.detail.get('reason') == 'duplicate_external_id'
+          for e in st8.tail_audit()))
+check('原资源仍可被正常删除',
+      cp8.deprovision('hosting', first.external_id, actor='owner-a') is True)
+
+print('== 8. 失败路径与回滚 ==')
 cp4, ad4, st4 = _new_cp()
 ad4.fail_provision = True
 expect_raises('适配器开通失败抛错', ControlPlaneError,
@@ -276,10 +423,11 @@ broken = _TestingOnlyBrokenStore(SqliteBackend(':memory:'))
 broken.install()
 cp5 = ControlPlane(broken, policy=_TestingOnlyPolicy(),
                    adapters=_TestingOnlyAdapters(ad4))
-expect_raises('台账写入失败抛错', ControlPlaneError,
+expect_raises('台账原子写失败抛错', ControlPlaneError,
               lambda: cp5.provision('hosting', {}, actor='u1'))
 check('台账失败后回滚真实资源', len(ad4.deleted) >= 1)
 check('台账失败不留台账记录', broken.count_resources() == 0)
+check('台账失败写 failed 审计', broken.tail_audit()[0].outcome == 'failed')
 
 cp6, ad6, st6 = _new_cp()
 r6 = cp6.provision('hosting', {}, actor='u1')
@@ -290,24 +438,47 @@ check('外部删除失败时台账保留（可重试）', st6.count_resources() 
 ad6.fail_deprovision = False
 check('重试删除成功', cp6.deprovision('hosting', r6.external_id, actor='u1') is True)
 
-bad_audit = _TestingOnlyBrokenAuditStore(SqliteBackend(':memory:'))
-bad_audit.install()
-cp7 = ControlPlane(bad_audit, policy=_TestingOnlyPolicy(),
-                   adapters=_TestingOnlyAdapters(_TestingOnlyAdapter()))
+# 原子后端：审计 INSERT 失败 → 台账与审计一起回滚，真实资源被清理。
+atomic_fail_backend = _TestingOnlyFailAuditBackend()
+atomic_fail_store = ResourceStore(atomic_fail_backend)
+atomic_fail_store.install()
+atomic_fail_ad = _TestingOnlyAdapter()
+cp9 = ControlPlane(atomic_fail_store, policy=_TestingOnlyPolicy(),
+                   adapters=_TestingOnlyAdapters(atomic_fail_ad))
+atomic_fail_backend.fail = True
+expect_raises('原子写失败抛 ControlPlaneError', ControlPlaneError,
+              lambda: cp9.provision('hosting', {}, actor='u1'))
+check('原子写失败后台账已回滚', atomic_fail_store.count_resources() == 0)
+check('原子写失败后真实资源已被清理', len(atomic_fail_ad.deleted) == 1)
+atomic_fail_backend.fail = False
+check('清理补偿的 failed 审计可写',
+      any(e.outcome == 'failed' for e in atomic_fail_store.tail_audit()))
+
+# 非原子后端：审计失败时台账已落地，抛 AuditWriteError 且绝不回滚真实资源。
+notx2_backend = _TestingOnlyNoTxBackend()
+notx2_store = ResourceStore(notx2_backend)
+notx2_store.install()
+notx2_ad = _TestingOnlyAdapter()
+cp10 = ControlPlane(notx2_store, policy=_TestingOnlyPolicy(),
+                    adapters=_TestingOnlyAdapters(notx2_ad))
+notx2_backend.fail_audit = True
 audit_msg = ''
 try:
-    cp7.provision('hosting', {}, actor='u1')
+    cp10.provision('hosting', {}, actor='u1')
 except AuditWriteError as exc:
     audit_msg = str(exc)
-check('审计写入失败抛 AuditWriteError', bool(audit_msg))
-check('审计失败时资源与台账已落地', bad_audit.count_resources() == 1)
-check('审计失败异常明确提示勿盲目重试',
-      '核对台账' in audit_msg and '重试' in audit_msg, audit_msg)
+check('非原子后端审计失败抛 AuditWriteError', bool(audit_msg))
+check('审计失败时台账已落地', notx2_store.count_resources() == 1)
+check('审计失败未误删真实资源', notx2_ad.deleted == [])
+check('审计失败异常明确提示核对台账与勿盲目重建',
+      '核对台账' in audit_msg and '不要盲目重建' in audit_msg, audit_msg)
 
-# ---------------------------------------------------------------- 7. 多后端与 CLI
-print('== 7. 后端与 CLI 真跑 ==')
+# ---------------------------------------------------------------- 9. 后端与 CLI
+print('== 9. 后端与 CLI 真跑 ==')
 check('MysqlBackend 提供 MySQL 方言 DDL',
       MysqlBackend(None).ddl() == DDL_MYSQL)
+check('MysqlBackend 声明原子能力',
+      MysqlBackend.supports_transactions is True)
 check('SqliteBackend 提供 SQLite 方言 DDL',
       SqliteBackend(':memory:').ddl() == DDL_SQLITE)
 
@@ -328,8 +499,11 @@ try:
     body = json.loads(r_init.stdout)
     check('CLI init 返回合法 JSON 且两表可用',
           all(body['health']['tables'].values()))
+    check('CLI health 暴露原子能力',
+          body['health']['capabilities']['atomic_audit'] is True)
 except ValueError:
     check('CLI init 返回合法 JSON 且两表可用', False, r_init.stdout[-200:])
+    check('CLI health 暴露原子能力', False)
 
 r_health = cli('health')
 check('CLI health 退出码 0', r_health.returncode == 0)

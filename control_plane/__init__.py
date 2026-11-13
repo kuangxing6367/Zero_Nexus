@@ -8,13 +8,23 @@ Zeronus 只是可选的进程 / HTTP 承载壳，见
 """
 from __future__ import annotations
 
-from control_plane.control import ControlPlane
+from control_plane.control import (
+    AdapterUnavailable, AuditWriteError, ControlPlane, ControlPlaneError,
+    DependencyMissing, DuplicateExternalId, PolicyDenied, ResourceNotFound,
+)
 from control_plane.models import AuditEvent, Resource
-from control_plane.store import ResourceStore, SqliteBackend
+from control_plane.store import (
+    AuditCommitError, DuplicateResource, MysqlBackend, ResourceStore,
+    SqliteBackend, StoreError, TransactionError,
+)
 
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 
 __all__ = [
-    '__version__', 'ControlPlane', 'Resource', 'AuditEvent',
-    'ResourceStore', 'SqliteBackend',
+    '__version__', 'ControlPlane', 'ControlPlaneError', 'DependencyMissing',
+    'PolicyDenied', 'AdapterUnavailable', 'ResourceNotFound',
+    'DuplicateExternalId', 'AuditWriteError',
+    'Resource', 'AuditEvent', 'ResourceStore', 'SqliteBackend',
+    'MysqlBackend', 'StoreError', 'DuplicateResource',
+    'AuditCommitError', 'TransactionError',
 ]

@@ -11,7 +11,16 @@ from control_plane.store import DDL_MYSQL
 
 
 class FrameworkBackend:
-    """把框架 ctx 的数据库能力包装成 ResourceStore 需要的普通 Backend。"""
+    """把框架 ctx 的数据库能力包装成 ResourceStore 需要的普通 Backend。
+
+    **明确不提供事务**：``ctx.db_*`` 每次调用可能从连接池取到不同连接，
+    跨调用拼 BEGIN/COMMIT 并不能保证落在同一个事务里，假装原子比不原子
+    更危险。ResourceStore 会通过 capabilities() 把 ``atomic_audit=False``
+    暴露出来，并在降级写入的审计 detail 里标记 ``atomic=False``。
+    需要原子审计的部署方请直接用 SqliteBackend / MysqlBackend。
+    """
+
+    supports_transactions = False
 
     def __init__(self, ctx):
         self._ctx = ctx

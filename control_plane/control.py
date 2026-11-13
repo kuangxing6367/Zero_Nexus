@@ -9,7 +9,9 @@
 - 内核不接触凭据明文：``spec`` 原样交给适配器，审计 detail 只放
   kind / external_id 这类元数据，不写 spec 全文；
 - 缺依赖、授权拒绝、适配器缺失一律明确抛错，不静默降级；
-- 删除即真删，失败时台账不删，保证可重试。
+- 删除即真删，失败时台账不删，保证可重试；
+- 成功路径的「台账 + 终态审计」由 store 一次原子提交。事务只覆盖
+  本地库，**不覆盖外部真实资源**——这条边界在所有失败文案里都写清楚。
 
 调用形态（壳层负责把网关注入的 claims 摊平成 actor / tenant / scopes）：
 
@@ -24,7 +26,9 @@ import logging
 from typing import Any, Mapping, Sequence
 
 from control_plane.models import AuditEvent, Resource
-from control_plane.store import ResourceStore, StoreError
+from control_plane.store import (
+    AuditCommitError, DuplicateResource, ResourceStore, StoreError,
+)
 
 logger = logging.getLogger('control_plane')
 
@@ -51,11 +55,20 @@ class ResourceNotFound(ControlPlaneError):
     """台账里没有这条资源。"""
 
 
-class AuditWriteError(ControlPlaneError):
-    """审计写入失败。
+class DuplicateExternalId(ControlPlaneError):
+    """适配器返回的外部标识已登记。
 
-    注意：审计与资源写入并非同一事务，抛出本异常时业务动作可能已经落地。
-    调用方应按 external_id 查询台账后再决定是否重试，**不要盲目重建资源**。
+    此时**不会**回滚真实资源：该标识可能指向台账里已有的另一条资源，
+    调用 deprovision 会把别人的真实实例删掉。
+    """
+
+
+class AuditWriteError(ControlPlaneError):
+    """终态审计没有写成功。
+
+    支持事务的后端上，台账与审计一起回滚；不支持事务的后端上，
+    台账已落地而审计缺失。两种情况都不能盲目重试或重建资源，
+    必须按外部标识核对台账与真实资源状态后再决定补偿动作。
     """
 
 
@@ -73,8 +86,10 @@ class ControlPlane:
             missing = [n for n, v in (('store', store), ('policy', policy),
                                       ('adapters', adapters)) if v is None]
             raise DependencyMissing(f'必需依赖未注入: {", ".join(missing)}')
-        _check_shape(store, ('add_resource', 'get_resource', 'delete_resource',
-                             'list_resources', 'append_audit', 'tail_audit'), 'store')
+        _check_shape(store, ('add_resource', 'add_resource_with_audit',
+                             'get_resource', 'delete_resource',
+                             'delete_resource_with_audit', 'list_resources',
+                             'append_audit', 'tail_audit'), 'store')
         _check_shape(policy, ('allowed',), 'policy')
         _check_shape(adapters, ('resolve',), 'adapters')
         self._store = store
@@ -91,17 +106,28 @@ class ControlPlane:
                                      outcome, detail)
         except StoreError as exc:
             raise AuditWriteError(
-                f'{exc}；业务动作可能已落地，请按外部标识核对台账后再决定重试'
+                f'{exc}；请按外部标识核对台账与真实资源状态后再决定重试，'
+                f'不要盲目重建'
             ) from exc
+
+    def _best_effort_audit(self, actor: str, action: str, target_kind: str,
+                           target_ref: str, outcome: str,
+                           detail: Mapping[str, Any] | None = None) -> None:
+        """失败路径上的补偿审计：写不进去只记日志，不覆盖原始失败原因。"""
+        try:
+            self._audit(actor, action, target_kind, target_ref, outcome, detail)
+        except AuditWriteError as exc:
+            logger.error('补偿审计写入失败（原失败原因保持不变）: %s', exc)
 
     def _authorize(self, actor: str, action: str,
                    target: Mapping[str, Any], scopes: Sequence[str]) -> None:
         # 只接受布尔真值 True：返回 None / 0 / 字符串一律视为未放行。
         allowed = self._policy.allowed(actor, action, target, tuple(scopes or ()))
         if allowed is not True:
-            self._audit(actor, action, str(target.get('kind') or '-'),
-                        str(target.get('external_id') or '-'), 'denied',
-                        {'reason': 'policy_not_allowed'})
+            # 拒绝结论是安全语义，绝不能被审计故障覆盖成别的异常。
+            self._best_effort_audit(actor, action, str(target.get('kind') or '-'),
+                                    str(target.get('external_id') or '-'),
+                                    'denied', {'reason': 'policy_not_allowed'})
             raise PolicyDenied(f'策略未放行: actor={actor} action={action}')
 
     def _adapter(self, kind: str):
@@ -122,9 +148,10 @@ class ControlPlane:
     def provision(self, kind: str, spec: Mapping[str, Any], *, actor: str,
                   tenant: str | None = None,
                   scopes: Sequence[str] = ()) -> Resource:
-        """创建资源：授权 → 适配器开通 → 台账登记 → 审计。
+        """创建资源：授权 → 适配器开通 → (台账 + 审计) 原子写。
 
-        台账登记失败会尽力回滚已创建的真实资源，避免孤儿资源。
+        台账与审计同事务；事务失败时两者一起回滚，外部真实资源需尽力
+        清理。**唯一例外**：外部标识已登记时绝不清理，避免误删已有实例。
         """
         self._check_actor(actor)
         if not isinstance(kind, str) or not kind.strip():
@@ -139,41 +166,58 @@ class ControlPlane:
         try:
             external_id = adapter.provision(spec)
         except Exception as exc:
-            self._audit(actor, 'provision', kind, '-', 'failed',
-                        {'reason': 'adapter_provision_failed'})
+            self._best_effort_audit(actor, 'provision', kind, '-', 'failed',
+                                    {'reason': 'adapter_provision_failed'})
             raise ControlPlaneError(f'适配器开通失败: {exc}') from exc
         if not isinstance(external_id, str) or not external_id.strip():
-            self._audit(actor, 'provision', kind, '-', 'failed',
-                        {'reason': 'invalid_external_id'})
+            self._best_effort_audit(actor, 'provision', kind, '-', 'failed',
+                                    {'reason': 'invalid_external_id'})
             raise ControlPlaneError('适配器必须返回非空的 external_id 字符串')
 
         try:
-            resource = self._store.add_resource(kind, external_id, actor, tenant)
+            resource = self._store.add_resource_with_audit(
+                kind, external_id, actor, tenant, actor)
+        except DuplicateResource as exc:
+            # 关键：该 external_id 已属于台账里另一条资源，调用
+            # adapter.deprovision 会把已有资源的真实实例删掉，绝对不能做。
+            self._best_effort_audit(actor, 'provision', kind, external_id,
+                                    'failed', {'reason': 'duplicate_external_id'})
+            raise DuplicateExternalId(
+                f'{exc}；未回滚真实资源（该标识可能属于已有资源）'
+            ) from exc
+        except AuditCommitError as exc:
+            # 非原子后端：台账已落地，只缺终态审计，不能回滚真实资源。
+            raise AuditWriteError(
+                f'{exc}；台账已落地，请按外部标识核对台账后做审计补偿，'
+                f'不要盲目重建'
+            ) from exc
         except StoreError as exc:
-            # 真实资源已创建但台账没写成：尽力回滚，不留下看不见的孤儿。
+            # 原子后端：事务已回滚，台账没落地 → 外部资源成了孤儿，需清理。
             try:
                 adapter.deprovision(external_id)
             except Exception as rollback_exc:
-                logger.error('台账写入失败后回滚真实资源也失败: %s', rollback_exc)
-            self._audit(actor, 'provision', kind, external_id, 'failed',
-                        {'reason': 'store_write_failed'})
-            raise ControlPlaneError(f'资源登记失败，已尝试回滚: {exc}') from exc
+                logger.error('原子写入失败后回滚真实资源也失败: %s', rollback_exc)
+            self._best_effort_audit(actor, 'provision', kind, external_id,
+                                    'failed', {'reason': 'atomic_write_failed'})
+            raise ControlPlaneError(
+                f'台账与审计原子写入失败，已尝试回滚真实资源: {exc}'
+            ) from exc
 
-        self._audit(actor, 'provision', kind, external_id, 'ok')
         return resource
 
     def deprovision(self, kind: str, external_id: str, *, actor: str,
                     scopes: Sequence[str] = ()) -> bool:
-        """真删：授权 → 外部系统物理删除 → 台账物理 DELETE → 审计。
+        """真删：授权 → 外部系统物理删除 → (台账 DELETE + 审计) 原子写。
 
         顺序是刻意的：外部删除失败时台账保留，运维可重试；
-        台账删除失败时真实资源已消失，审计里留 failed 供人工核对。
+        本地提交失败时台账回滚（记录仍在）但真实资源已消失，
+        因此必须提示人工核对，不能当作「可安全重试」。
         """
         self._check_actor(actor)
         record = self._store.get_resource(kind, external_id)
         if record is None:
-            self._audit(actor, 'deprovision', kind, external_id, 'failed',
-                        {'reason': 'not_found'})
+            self._best_effort_audit(actor, 'deprovision', kind, external_id,
+                                    'failed', {'reason': 'not_found'})
             raise ResourceNotFound(f'资源不存在: {kind}/{external_id}')
 
         target = {'kind': kind, 'external_id': external_id,
@@ -184,16 +228,27 @@ class ControlPlane:
         try:
             adapter.deprovision(external_id)
         except Exception as exc:
-            self._audit(actor, 'deprovision', kind, external_id, 'failed',
-                        {'reason': 'adapter_deprovision_failed'})
+            self._best_effort_audit(actor, 'deprovision', kind, external_id,
+                                    'failed',
+                                    {'reason': 'adapter_deprovision_failed'})
             raise ControlPlaneError(f'外部删除失败，台账已保留可重试: {exc}') from exc
 
-        if not self._store.delete_resource(kind, external_id):
-            self._audit(actor, 'deprovision', kind, external_id, 'failed',
-                        {'reason': 'store_delete_failed'})
-            raise StoreError('台账物理删除未生效，请人工核对')
+        try:
+            self._store.delete_resource_with_audit(kind, external_id, actor)
+        except AuditCommitError as exc:
+            raise AuditWriteError(
+                f'{exc}；台账已物理删除，请按外部标识核对真实资源状态，'
+                f'不要盲目重试'
+            ) from exc
+        except StoreError as exc:
+            self._best_effort_audit(actor, 'deprovision', kind, external_id,
+                                    'failed',
+                                    {'reason': 'atomic_delete_failed'})
+            raise ControlPlaneError(
+                f'台账与审计原子删除失败：真实资源已删除、台账已回滚，'
+                f'请人工核对，不要直接重试: {exc}'
+            ) from exc
 
-        self._audit(actor, 'deprovision', kind, external_id, 'ok')
         return True
 
     def status(self, kind: str, external_id: str, *, actor: str,
@@ -234,5 +289,6 @@ class ControlPlane:
 
 __all__ = [
     'ACTIONS', 'ControlPlane', 'ControlPlaneError', 'DependencyMissing',
-    'PolicyDenied', 'AdapterUnavailable', 'ResourceNotFound', 'AuditWriteError',
+    'PolicyDenied', 'AdapterUnavailable', 'ResourceNotFound',
+    'DuplicateExternalId', 'AuditWriteError',
 ]

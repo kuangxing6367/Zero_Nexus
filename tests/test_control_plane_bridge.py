@@ -45,8 +45,9 @@ class _Services:
 
 
 class _Framework:
-    def __init__(self, enabled=True):
-        self.config = {'resource_control': {'enabled': enabled}}
+    def __init__(self, enabled=True, expose=False):
+        self.config = {'resource_control': {
+            'enabled': enabled, 'expose_readonly_api': expose}}
         self.services = _Services()
         self._pending_api_routes = []
         self.api_registry = None
@@ -55,8 +56,8 @@ class _Framework:
 class _Ctx:
     """桥到真 SQLite，DDL 走内核真实翻译函数。"""
 
-    def __init__(self, enabled=True):
-        self._framework = _Framework(enabled)
+    def __init__(self, enabled=True, expose=False):
+        self._framework = _Framework(enabled, expose)
         self.conn = sqlite3.connect(':memory:')
         self.conn.row_factory = sqlite3.Row
         self.routes = []
@@ -116,12 +117,15 @@ store = mod.register(ctx)
 check('启用后返回 ResourceStore', type(store).__name__ == 'ResourceStore')
 check('store 挂到 fw.services',
       ctx._framework.services.get('control_plane_store') is store)
-check('只注册一条只读路由',
+check('默认只注册一条只读 health 路由',
       len(ctx.routes) == 1 and ctx.routes[0][0] == 'control-plane/health'
       and ctx.routes[0][2] == ['GET'] and ctx.routes[0][3] is True)
 check('register 未自动建表', not store.health()['tables']['rc_resources'])
 check('壳未构造 ControlPlane（services 里只有 store）',
       list(ctx._framework.services.items) == ['control_plane_store'])
+check('FrameworkBackend 诚实声明不支持原子审计',
+      store.capabilities()['atomic_audit'] is False
+      and store.health()['capabilities']['backend'] == 'FrameworkBackend')
 
 health_before = ctx.routes[0][1]({})
 check('建表前健康探测返回未就绪', health_before['ok'] is False)
@@ -146,8 +150,49 @@ check('经 ctx 写审计且脱敏',
 check('真删生效', store.delete_resource('hosting', 'ext-shell-1')
       and store.count_resources() == 0)
 
+print('== 框架壳：非原子后端的显式降级 ==')
+degrade = store.add_resource_with_audit('hosting', 'ext-degrade', 'sub-9', 't1',
+                                        'sub-9')
+check('降级路径仍能登记资源', degrade.external_id == 'ext-degrade')
+check('降级路径审计明确标记 atomic=False',
+      store.tail_audit()[0].detail.get('atomic') is False)
+
+print('== 框架壳：显式开启只读路由 ==')
+ctx2 = _Ctx(enabled=True, expose=True)
+store2 = mod.register(ctx2)
+check('开启后注册三条路由', len(ctx2.routes) == 3)
+check('三条路由均为 GET + 鉴权',
+      all(r[2] == ['GET'] and r[3] is True for r in ctx2.routes))
+check('额外两条为 resources / audit',
+      [r[0] for r in ctx2.routes[1:]] == ['control-plane/resources',
+                                          'control-plane/audit'])
+mod.install(ctx2)
+store2.add_resource('hosting', 'ext-ro-1', 'sub-1', 'tA')
+store2.append_audit('sub-1', 'provision', 'hosting', 'ext-ro-1', 'ok',
+                    {'token': 'must-not-appear'})
+
+resources_handler = ctx2.routes[1][1]
+audit_handler = ctx2.routes[2][1]
+r_res = resources_handler({'args': {'tenant': 'tA', 'limit': '10'}})
+check('只读台账路由返回记录',
+      r_res['ok'] is True and r_res['count'] == 1
+      and r_res['resources'][0]['external_id'] == 'ext-ro-1')
+check('只读台账路由按 tenant 过滤',
+      resources_handler({'args': {'tenant': 'other'}})['count'] == 0)
+check('limit 被夹在合法范围',
+      resources_handler({'args': {'limit': '999999'}})['count'] == 1)
+r_audit = audit_handler({'args': {'limit': '5'}})
+check('只读审计路由返回已脱敏事件',
+      r_audit['ok'] is True and r_audit['count'] == 1
+      and 'must-not-appear' not in str(r_audit))
+check('无 args 时路由用默认参数',
+      resources_handler({})['ok'] is True and audit_handler({})['ok'] is True)
+
+print('== 框架壳：卸载 ==')
 mod.unregister()
 check('unregister 后健康路由返回未启用', ctx.routes[0][1]({})['ok'] is False)
+check('unregister 后只读路由也返回未启用',
+      resources_handler({})['ok'] is False and audit_handler({})['ok'] is False)
 
 print()
 print(f'通过 {_passed} 项，失败 {_failed} 项')
