@@ -40,6 +40,7 @@ extensions:
     host: 0.0.0.0
     port: 37010
     nodes: []          # - {name: node-1, secret: change-me}
+    groups: {}         # L3 分组：{edge: [node-1, node-2]}，成员须在 nodes 清单里
   node_agent:
     enabled: false
     hub_host: 127.0.0.1
@@ -48,4 +49,7 @@ extensions:
     secret: ''
     interval: 30
     allow_shell: false
-    allow_docker: false   # docker exec / PTY 与 shell 同级，默认禁
+    allow_docker: false     # docker exec / PTY 与 shell 同级，默认禁
+    allow_packages: false   # pkg.sync 会拉取并加载机制包，默认禁
+    allow_config: false     # config.push / config.reload 会改节点配置，默认禁
+    allow_upgrade: false    # framework.update / rollback 会替换框架代码，默认禁

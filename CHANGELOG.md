@@ -1,6 +1,6 @@
 # 更新日志（CHANGELOG）
 
-记录 ZER NUS 的版本变化。版本号遵循语义化版本 `主版本.次版本.修订号`，`-alpha` / `-beta` 为预发布；
+记录 Zeronus 的版本变化。版本号遵循语义化版本 `主版本.次版本.修订号`，`-alpha` / `-beta` 为预发布；
 未发布的在研变化放在最顶部「开发中」小节。版本事实以 GitHub Releases 与 Git Tag 为准。
 
 仓库：<https://github.com/kuangxing6367/Zero_Nexus>
@@ -8,6 +8,90 @@
 ---
 
 ## 开发中
+
+### 框架自身升级 / 回滚（L3 收尾完成）
+
+- 新增 `service/updater.py`，统一「校验 → 暂存 → 编译检查 → 备份 → 替换 → 回滚」：
+  - sha256 **fail closed**：默认必须提供目标 ZIP 哈希；显式
+    `allow_unsigned=True` 才允许跳过（WebUI 仍由 `security.update_allow_unsigned` 控制）。
+  - 复用 `core/security/archive_guard.py` 做归档安全校验；解压到暂存区后
+    对全部 `.py` 执行编译检查，任何失败都不触碰线上文件。
+  - 替换前把旧条目移入 `<root>/.update_backup/<stamp>-<sha12>/`，中途失败自动
+    恢复；`rollback_source_update()` 可回滚到任意备份（幂等），
+    `list_backups()` 只读列出备份。
+  - 白名单只覆盖框架代码/文档（`core` / `service` / `software/extensions` /
+    `sql` / `deploy` / `docs` 等），保护 `data/`、`repo/`、`config.yaml`、
+    `extensions.yaml` 与 `software/plugins/`。
+- 修复 WebUI 框架更新白名单仍是仓库重组前的 `framework/` / `extensions/`
+  （实际上只更新了 `sql`、`main.py` 等少数文件），改用 `FRAMEWORK_INCLUDE`。
+- WebUI：`POST /api/framework/update` 复用更新机制并支持 `dry_run`；新增
+  `GET /api/framework/backups`、`POST /api/framework/rollback`。
+- 多机 L3：节点侧新增 `framework.status`（只读）/ `framework.update` /
+  `framework.rollback`，后两者需 `allow_upgrade: true`（默认 false）；
+  hub 侧新增 `push_framework()` / `rollback_framework()` / `framework_status()`，
+  默认 `concurrency=1` 逐台滚动，支持 `stagger`。
+- 新增 `tests/test_framework_update.py`（43 项：fail closed / sha256 / 路径穿越 /
+  编译失败 / 白名单 / 用户数据保护 / dry_run / 备份 / 幂等回滚 / 节点闸门 /
+  hub 载荷构造）。
+- `.gitignore` 增加 `config.managed.yaml` 与 `.update_backup/`。
+- 局限：升级/回滚不自动重启，也不做重启后健康检查与自动回滚；灰度节奏由
+  调用方按逐台回执控制。
+
+### 配置热重载 / 配置下发（L3 收尾之一）
+
+- 新增 `Framework.reload_config()`：重新读取配置文件并**就地更新** `self.config`
+  （对象身份不变，已持有引用的模块能读到新值），刷新 heartbeat / watchdog
+  派生值，触发 `config.reload` 扩展点（`handler(old_config, new_config)`）。
+  不重启服务；端口 / 数据库连接 / SSL 等启动期绑定项仍需重启。
+- `core.config` 新增托管覆盖层：`config.yaml` 同目录的 `config.managed.yaml`
+  在加载时**最后合并**（`managed_config_path()` / `_deep_merge()` /
+  `_apply_managed_overlay()`），优先级高于 `config.yaml` 与 `extensions.yaml`，
+  不修改用户原配置文件与 `extensions.yaml`。根节点非映射的配置直接告警返回，
+  由调用方以 `ValueError` 拒绝，避免在合并处抛 `AttributeError`。
+- 节点侧 `node_agent` 新增：
+  - `config.status`（只读）：覆盖层是否存在 / 大小 / sha256 / 顶层键与 `allow_config`。
+  - `config.reload`：仅重读配置（含覆盖层）并触发扩展点。
+  - `config.push`：把 YAML 原文 + 64 位 sha256 下发到覆盖层；节点重算比对后
+    原子写入（临时文件 + fsync + `os.replace`），可选立即重载；写盘或重载失败
+    自动回滚到上一份覆盖层。支持 `dry_run`、`reload=false`、`clear`；
+    拒绝空 / 非映射 / 超过 1MiB / 校验不匹配的内容。
+  - `config.reload` / `config.push` 由 `node_agent.allow_config`（默认 false）开闸；
+    热重载只即时应用 `allow_*` / `interval`，`name` / `secret` / `hub_host` /
+    `hub_port` 绑定在当前连接上，改为提示需重启。
+- hub 侧 `node_control` 新增 `push_config()`（规范化 YAML + 计算 sha256 后走
+  `send_group`）、`config_status()`、`reload_config()`，默认 `concurrency=1`
+  逐台下发。
+- 新增 `tests/test_config_reload.py`（53 项：覆盖层优先级、`reload_config`
+  就地更新与扩展点、闸门、sha256/YAML/大小校验、dry_run、原子写、失败回滚、
+  clear、热更新字段与连接类字段提示、hub 载荷构造）。
+- 更新 `extensions.yaml` 与 `core/config` 的扩展默认值，新增
+  `node_agent.allow_config: false`。
+
+### 多机管理（L3 编排第一切片）
+
+- hub 侧 `node_control` 新增逻辑分组：`node_control.groups`（成员须在
+  `nodes` 预共享密钥清单内，分组**不绕过鉴权**；未声明的成员启动时告警且不会接入）。
+- 新增批量/灰度下发：`send_group(group, cmd, args, timeout, concurrency, stagger)`
+  与 `broadcast(...)`。并发上限默认 4，`stagger` 控制相邻下发间隔
+  （`concurrency=1` + `stagger=N` 即逐台灰度）；单台失败不中断整组，
+  返回 `total / ok / failed / offline / elapsed / results` 聚合摘要；
+  未知分组直接返回 `error`，不会静默退化成全量下发。`snapshot()` 增加
+  节点所属分组与能力声明。
+- 节点侧 `node_agent` 的 HELLO 上报 `capabilities`（命令 → 是否启用），
+  新增只读 `pkg.list`（已加载 zkg 工具 + 本地 `repo/` 包目录）与
+  `pkg.sync`（按 zkg 源重跑 scan → resolve → rebuild → 按需加载）。
+  `pkg.sync` 会拉取并执行远端机制包，须显式 `allow_packages: true`
+  （默认 false），完整性校验（sha256 / HMAC 签名）仍在 loader 内强制执行。
+- 抽出 `service/startup.run_zkg(fw)`：sys 服务启动与节点 `pkg.sync` 共用同一
+  扫描根、源配置与校验路径，避免两套接线漂移。
+- 新增 `tests/test_node_orchestration.py`（29 项：能力/闸门 / 只读包清单 /
+  分组解析 / 在线离线判定 / 分组与全量下发 / 回执聚合 / 并发与滚动语义）。
+- 修订：`docs/deployment.md` 补 L3 配置与调用示例，`docs/roadmap.md` 勾选
+  第一切片；配置下发与框架自身升级已在下方 / 上方单独记录。
+- 顺带修复 `tests/test_perm.py` 在 Windows GBK 控制台下打印 `⊃` 触发
+  `UnicodeEncodeError`（测试因此假红，不是权限断言失败）；删除控制面移除后
+  残留的未跟踪 `control_plane/__pycache__` 与 `software/extensions/resource_control/__pycache__`
+  （仅 .pyc，无源码，已确认不在 Git 索引内）。
 
 ### 边界纠正：统一资源控制面移出框架仓库
 

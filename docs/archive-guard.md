@@ -85,7 +85,7 @@ from core.security import (
 | 位置 | 归档类型 | 配额 | 失败处理 |
 | --- | --- | --- | --- |
 | `software/extensions/webui/plugins.py` | 插件 ZIP | `DEFAULT_LIMITS` | HTTP 400 `插件包校验失败` |
-| `software/extensions/webui/framework_ops.py` | 框架自更新 ZIP | `FRAMEWORK_UPDATE_LIMITS` | HTTP 400 `更新包校验失败` |
+| `service/updater.py`（WebUI / 节点代理共用） | 框架自更新 ZIP | `FRAMEWORK_UPDATE_LIMITS` | 抛 `UpdateError`，调用方返回 400 / 失败回执 |
 | `core/terminal/builtins.py` | 终端更新 ZIP | `FRAMEWORK_UPDATE_LIMITS` | 抛 `SafeArchiveError` |
 | `service/zkg/loader.py` | 机制包 TAR | `DEFAULT_LIMITS` | 记日志并返回 `False` |
 

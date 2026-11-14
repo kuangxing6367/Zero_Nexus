@@ -22,6 +22,7 @@
   session.create.before / session.create.after      多轮会话对象创建前后
   session.wait.before / session.wait.after          等待用户下一条消息前后
   cron.task.trigger.before / cron.task.trigger.after 定时任务（含手动触发）执行前后
+  config.reload                                     配置文件热重载完成（old, new）
 
 插件侧用 `ctx.hook(point, handler, priority=50)` 注册；同名（插件内）重复注册自动去重。
 handler 既可以是普通函数，也可以是 `async def`：
@@ -69,6 +70,9 @@ class HookPoints:
     SESSION_WAIT_AFTER = 'session.wait.after'
     CRON_TASK_TRIGGER_BEFORE = 'cron.task.trigger.before'
     CRON_TASK_TRIGGER_AFTER = 'cron.task.trigger.after'
+
+    # 配置热重载（Framework.reload_config 触发；handler 收到 old_config, new_config）
+    CONFIG_RELOAD = 'config.reload'
 
 
 # 各扩展点约定返回 False 时是否触发"短路"语义

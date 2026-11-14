@@ -189,6 +189,49 @@ def _generate_default_config(config_path: str):
     _get_logger().info(f"已生成默认配置文件: {config_path}，请按需修改后重启")
 
 
+def managed_config_path(config_path: str) -> str:
+    """托管配置覆盖层路径：``config.yaml`` → ``config.managed.yaml``。
+
+    覆盖层由编排面（如 node_agent 的 config.push）写入，加载时**最后合并**，
+    优先级高于 config.yaml 与 extensions.yaml；不修改用户原配置文件。
+    """
+    root, ext = os.path.splitext(os.path.abspath(config_path))
+    return root + '.managed' + (ext or '.yaml')
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """递归合并 dict：dict 逐键合并，其余类型（含 list）整体覆盖。"""
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def _apply_managed_overlay(config: dict, config_path: str) -> dict:
+    """把托管覆盖层合并进配置（不存在则原样返回）。"""
+    if not isinstance(config, dict):
+        # 主配置根节点不是映射：交给调用方校验，这里不做合并以免崩溃。
+        return config
+    path = managed_config_path(config_path)
+    if not os.path.isfile(path):
+        return config
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            overlay = yaml.safe_load(f) or {}
+    except Exception as e:
+        _get_logger().warning(f"读取托管配置失败（已忽略）: {path}: {e}")
+        return config
+    if not isinstance(overlay, dict):
+        _get_logger().warning(f"托管配置根节点不是映射，已忽略: {path}")
+        return config
+    # 覆盖层同样支持 ${VAR}；只在内存展开，不落盘明文
+    _deep_merge(config, _env_replace(overlay))
+    _get_logger().info(f"已合并托管配置: {path}")
+    return config
+
+
 def load_config(config_path: str = None) -> dict:
     """
     加载 YAML 配置文件，支持环境变量替换
@@ -207,8 +250,17 @@ def load_config(config_path: str = None) -> dict:
     # 环境变量替换
     config = _env_replace(config)
 
+    # 根节点必须是映射：非映射直接返回，由 Framework.reload_config 等调用方
+    # 以 ValueError 拒绝，避免在自动同步/覆盖层合并处抛 AttributeError。
+    if not isinstance(config, dict):
+        _get_logger().warning(f"配置文件根节点不是映射: {config_path}")
+        return config
+
     # 官方插件清单：自动扫描 software/extensions/ 同步 extensions.yaml，并合并进 config
     _autoload_extensions(config)
+
+    # 编排面托管覆盖层：最后合并，优先级最高
+    config = _apply_managed_overlay(config, config_path)
 
     return config
 
@@ -250,10 +302,11 @@ _EXTENSION_SCHEMA = {
     'node_manager': {'enabled': False, 'interval': 30, 'timeout': 5,
                      'nodes': []},
     'node_control': {'enabled': False, 'host': '0.0.0.0', 'port': 37010,
-                     'nodes': []},
+                     'nodes': [], 'groups': {}},
     'node_agent': {'enabled': False, 'hub_host': '127.0.0.1', 'hub_port': 37010,
                    'name': '', 'secret': '', 'interval': 30, 'allow_shell': False,
-                   'allow_docker': False},
+                   'allow_docker': False, 'allow_packages': False,
+                   'allow_config': False, 'allow_upgrade': False},
 }
 
 

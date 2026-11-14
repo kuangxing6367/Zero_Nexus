@@ -18,24 +18,47 @@
     secret: change-me-node-1  # 预共享密钥
     interval: 30              # 心跳周期（秒）
     allow_shell: false        # 是否允许 shell 命令（默认禁，安全开关）
+    allow_packages: false     # 是否允许 pkg.sync（按 zkg 源同步机制包，默认禁）
+    allow_config: false       # 是否允许 config.push / config.reload（配置下发，默认禁）
+    allow_upgrade: false      # 是否允许 framework.update / framework.rollback（框架自升级，默认禁）
 
 命令白名单（hub 下发 cmd 字段）：
-  ping / health 恒可用；shell 需 allow_shell: true（args: {"cmd": "..."}）；
+  ping / health / pkg.list 恒可用；
+  shell 需 allow_shell: true（args: {"cmd": "..."}）；
   docker.ws（含容器 exec）与 docker.pty / PTY 流需 allow_docker: true
   —— docker exec / PTY 与 shell 等价（可在容器内获得交互 shell），
-  拿到 hub 控制权不等于默认获得节点 shell，必须显式开闸。
+  拿到 hub 控制权不等于默认获得节点 shell，必须显式开闸；
+  pkg.sync 需 allow_packages: true —— 会按 zkg 源拉取并加载机制包
+  （sha256 / HMAC 签名校验仍在 loader 内强制执行），同样是「执行远端代码」
+  的入口，因此不与只读的 pkg.list 同级；
+  config.status 恒可用（只读）；config.reload / config.push 需 allow_config: true
+  —— 写入的是 config.yaml 同目录的托管覆盖层 config.managed.yaml，加载时最后
+  合并、优先级最高，不改用户原配置文件；推送带 sha256 强校验，落盘原子替换，
+  热重载失败自动回滚。端口 / 数据库连接 / SSL 等启动期绑定项仍需重启才生效；
+  framework.status 恒可用（只读）；framework.update / framework.rollback 需
+  allow_upgrade: true —— 升级包同样带 sha256 强校验，先暂存并编译检查，再备份
+  旧文件后替换，失败自动回滚；升级/回滚后都必须重启进程才加载新代码。
+
+HELLO 载荷携带 capabilities（命令 → 是否启用），hub 可在 snapshot() 中看到；
+能力声明只用于展示，实际执行仍由本文件的白名单与安全开关兜底。
 """
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
+import re
 import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+
+import yaml
 
 try:                        # pty 仅 POSIX；Windows 上无 pty，PTY 功能不可用但其余正常
     import pty
@@ -53,11 +76,18 @@ from service.transport.framed import FramedClient, DEFAULT_REPLAY_WINDOW
 
 logger = logging.getLogger('zernus')
 
+# 配置下发（config.push）的硬上限与强校验格式：覆盖层单文件不超过 1MiB，
+# sha256 必须是 64 位小写十六进制（防止空校验 / 截断校验）。
+_MAX_CONFIG_BYTES = 1024 * 1024
+_SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+# 框架源码升级包上限（ZIP 原文件，base64 后约为其 4/3）；framed 载荷上限 16MiB。
+_MAX_UPDATE_BYTES = 8 * 1024 * 1024
+
 __plugin_meta__ = {
     "name": "节点代理",
-    "version": "0.1.2",
+    "version": "0.1.5",
     "author": "Zeronus",
-    "desc": "多机管理 L2：节点侧代理（主动外连 hub，心跳+命令执行+PTY 流）",
+    "desc": "多机管理 L2/L3：节点侧代理（心跳+能力上报+命令+PTY+包同步+配置下发+框架升级）",
     "priority": 30,
     "official": True,
 }
@@ -86,6 +116,10 @@ class NodeAgent:
         self.interval = max(5, int(cfg.get('interval', 30)))
         self.allow_shell = bool(cfg.get('allow_shell', False))
         self.allow_docker = bool(cfg.get('allow_docker', False))
+        self.allow_packages = bool(cfg.get('allow_packages', False))
+        self.allow_config = bool(cfg.get('allow_config', False))
+        self.allow_upgrade = bool(cfg.get('allow_upgrade', False))
+        self._config_lock = threading.Lock()   # 覆盖层读写互斥（防并发 push 撕裂）
         self._seq = int(time.time()) & 0x7FFFFFFF
         self._loop = None
         self._thread = None
@@ -111,12 +145,364 @@ class NodeAgent:
                 'uptime_seconds': uptime, 'memory_mb': mem_mb,
                 'ts': time.strftime('%Y-%m-%d %H:%M:%S')}
 
+    def capabilities(self) -> dict:
+        """命令 → 当前是否启用（随 HELLO 上报，hub 只做展示，不替代执行侧校验）。"""
+        return {'ping': True, 'health': True, 'pkg.list': True,
+                'config.status': True, 'framework.status': True,
+                'shell': self.allow_shell,
+                'docker.ws': self.allow_docker,
+                'docker.pty': self.allow_docker,
+                'pkg.sync': self.allow_packages,
+                'config.reload': self.allow_config,
+                'config.push': self.allow_config,
+                'framework.update': self.allow_upgrade,
+                'framework.rollback': self.allow_upgrade}
+
+    def _pkg_list(self) -> dict:
+        """只读包清单：已加载的 zkg 工具 + 本地 repo 包目录。"""
+        loaded = sorted((getattr(self.fw, 'zkg_tools', {}) or {}).keys())
+        repo_ids = []
+        try:
+            from service.zkg.defaults import PROJECT_ROOT
+            repo = os.path.join(PROJECT_ROOT, 'repo')
+            if os.path.isdir(repo):
+                # 只认带入口的包目录，排除 dist / pool / __pycache__ 等仓库基础设施
+                repo_ids = sorted(
+                    d for d in os.listdir(repo)
+                    if os.path.isfile(os.path.join(repo, d, 'main.py')))
+        except Exception:
+            logger.exception("[node_agent] 读取本地 repo 清单失败")
+        return {'ok': True, 'data': {'loaded_tools': loaded,
+                                     'repo_packages': repo_ids}}
+
+    # ── 配置下发（托管覆盖层 config.managed.yaml）──────────
+    #
+    # 设计取舍：
+    #   - 只写 config.yaml 同目录的 config.managed.yaml，不碰用户原配置文件；
+    #     core.config.load_config 最后合并覆盖层（优先级最高）。
+    #   - extensions.yaml 会在 _autoload_extensions 里覆盖 config.yaml 的扩展段，
+    #     因此写 config.yaml 无法可靠下发扩展配置，必须走覆盖层。
+    #   - 强校验：调用方传 yaml 原文 + sha256（64 位十六进制），节点本地重算比对。
+    #   - 写入用「同目录临时文件 + os.replace」原子替换；reload 失败自动回滚。
+    def _config_path(self) -> str:
+        path = getattr(self.fw, 'config_path', None)
+        if path:
+            return os.path.abspath(path)
+        from core.kernel.paths import project_root
+        return os.path.join(project_root(), 'config.yaml')
+
+    def _managed_path(self) -> str:
+        from core.config import managed_config_path
+        return managed_config_path(self._config_path())
+
+    def _config_status(self) -> dict:
+        """只读：覆盖层是否存在、大小、sha256、顶层键；不做任何写入。"""
+        path = self._config_path()
+        mpath = self._managed_path()
+        info = {'allow_config': self.allow_config,
+                'config_path': path, 'managed_path': mpath,
+                'managed_exists': os.path.isfile(mpath),
+                'managed_bytes': 0, 'managed_sha256': None,
+                'managed_mtime': None, 'managed_top_keys': [],
+                'max_bytes': _MAX_CONFIG_BYTES}
+        if info['managed_exists']:
+            try:
+                size = os.path.getsize(mpath)
+                info['managed_bytes'] = size
+                info['managed_mtime'] = time.strftime(
+                    '%Y-%m-%d %H:%M:%S', time.localtime(os.path.getmtime(mpath)))
+                if size > _MAX_CONFIG_BYTES:
+                    # 不读取异常大的文件，避免只读查询变成内存放大入口。
+                    info['error'] = (f'覆盖层超过上限 {_MAX_CONFIG_BYTES}B，'
+                                     f'实际 {size}B')
+                    return {'ok': True, 'data': info}
+                with open(mpath, 'rb') as f:
+                    data = f.read()
+                info['managed_sha256'] = hashlib.sha256(data).hexdigest()
+                doc = yaml.safe_load(data.decode('utf-8')) or {}
+                if isinstance(doc, dict):
+                    info['managed_top_keys'] = sorted(str(k) for k in doc)
+            except Exception as e:
+                info['error'] = f'{type(e).__name__}: {e}'
+        return {'ok': True, 'data': info}
+
+    def _config_reload(self) -> dict:
+        """受 allow_config 闸门的配置热重载（不写文件，只重读+触发扩展点）。"""
+        if not self.allow_config:
+            return {'ok': False,
+                    'data': '配置热重载被禁用（node_agent.allow_config: false）'}
+        try:
+            return {'ok': True, 'data': self._do_reload()}
+        except Exception as e:
+            return {'ok': False,
+                    'data': f'配置重载失败: {type(e).__name__}: {e}'}
+
+    def _do_reload(self) -> dict:
+        """调用框架热重载入口；框架不支持时如实返回「需重启」。"""
+        reload = getattr(self.fw, 'reload_config', None)
+        if not callable(reload):
+            return {'reloaded': False,
+                    'reason': '当前运行时不支持热重载，需重启进程'}
+        info = reload()
+        return {'reloaded': True, 'detail': info if isinstance(info, dict) else {}}
+
+    @staticmethod
+    def _atomic_write(path: str, data: bytes):
+        """同目录临时文件 + fsync + os.replace 原子替换（不产生半截文件）。"""
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.config-', suffix='.tmp', dir=directory)
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _config_push(self, args: dict) -> dict:
+        """受 allow_config 闸门的配置下发：校验 → 原子写覆盖层 → 可选重载 → 失败回滚。
+
+        args:
+          yaml      (str)   覆盖层 YAML 原文（必填，除非 clear=true）
+          sha256    (str)   yaml 原文 UTF-8 字节的 sha256，64 位十六进制（必填，除非 clear）
+          dry_run   (bool)  只校验不落盘（默认 false）
+          reload    (bool)  写盘后立即热重载（默认 true）
+          clear     (bool)  删除覆盖层（恢复用户原配置；可与 reload 组合）
+        """
+        if not self.allow_config:
+            return {'ok': False,
+                    'data': '配置下发被禁用（node_agent.allow_config: false）'}
+
+        dry_run = bool(args.get('dry_run', False))
+        do_reload = bool(args.get('reload', True))
+        clear = bool(args.get('clear', False))
+        mpath = self._managed_path()
+
+        if clear:
+            if args.get('yaml') is not None:
+                return {'ok': False, 'data': 'clear 与 yaml 不能同时使用'}
+            if not os.path.isfile(mpath):
+                return {'ok': True, 'data': {'cleared': False,
+                                             'reason': '覆盖层不存在，无需清理',
+                                             'managed_path': mpath}}
+            if dry_run:
+                return {'ok': True, 'data': {'dry_run': True, 'cleared': True,
+                                             'managed_path': mpath}}
+            with self._config_lock:
+                try:
+                    with open(mpath, 'rb') as f:
+                        prev = f.read()
+                except OSError:
+                    prev = None
+                try:
+                    os.unlink(mpath)
+                    reloaded = self._do_reload() if do_reload else None
+                except Exception as e:
+                    reason = f'清理覆盖层失败: {type(e).__name__}: {e}'
+                    if prev is not None:      # 回滚：原覆盖层写回
+                        try:
+                            self._atomic_write(mpath, prev)
+                        except Exception:
+                            logger.exception('[node_agent] 覆盖层回滚失败')
+                    return {'ok': False, 'data': reason}
+            return {'ok': True, 'data': {'cleared': True, 'managed_path': mpath,
+                                         'reloaded': reloaded}}
+
+        raw = args.get('yaml')
+        if isinstance(raw, (dict, list)):
+            return {'ok': False,
+                    'data': 'args.yaml 必须是 YAML 原文字符串（不接受已解析对象，'
+                            '否则无法用 sha256 绑定传输内容）'}
+        if not isinstance(raw, str) or not raw.strip():
+            return {'ok': False, 'data': '缺少 args.yaml（覆盖层 YAML 原文）'}
+
+        expect = str(args.get('sha256') or '').strip().lower()
+        if not _SHA256_RE.match(expect):
+            return {'ok': False,
+                    'data': 'args.sha256 必须是 64 位小写十六进制 sha256'}
+
+        data = raw.encode('utf-8')
+        if len(data) > _MAX_CONFIG_BYTES:
+            return {'ok': False,
+                    'data': f'配置过大：{len(data)}B > 上限 {_MAX_CONFIG_BYTES}B'}
+        actual = hashlib.sha256(data).hexdigest()
+        if not hmac.compare_digest(actual, expect):
+            return {'ok': False,
+                    'data': f'sha256 校验失败：期望 {expect}，实际 {actual}'}
+
+        try:
+            doc = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            return {'ok': False, 'data': f'YAML 解析失败: {e}'}
+        if not isinstance(doc, dict) or not doc:
+            return {'ok': False,
+                    'data': '覆盖层根节点必须是非空映射（dict），不能为空或标量/列表'}
+
+        summary = {'managed_path': mpath, 'sha256': actual, 'bytes': len(data),
+                   'top_keys': sorted(str(k) for k in doc)}
+        if dry_run:
+            return {'ok': True, 'data': dict(summary, dry_run=True,
+                                             valid=True, written=False)}
+
+        with self._config_lock:
+            prev = None
+            existed = os.path.isfile(mpath)
+            if existed:
+                try:
+                    with open(mpath, 'rb') as f:
+                        prev = f.read()
+                except OSError as e:
+                    return {'ok': False, 'data': f'读取现有覆盖层失败: {e}'}
+            try:
+                self._atomic_write(mpath, data)
+                reloaded = self._do_reload() if do_reload else None
+            except Exception as e:
+                # 写入或重载失败：恢复到推送前的状态，避免节点停在半配置。
+                try:
+                    if prev is not None:
+                        self._atomic_write(mpath, prev)
+                    elif os.path.isfile(mpath):
+                        os.unlink(mpath)
+                    if do_reload:
+                        self._do_reload()      # 回滚后重载，恢复旧运行时状态
+                except Exception:
+                    logger.exception('[node_agent] 配置回滚失败，节点可能处于异常配置')
+                return {'ok': False,
+                        'data': f'配置下发失败（已回滚）: {type(e).__name__}: {e}'}
+
+        return {'ok': True, 'data': dict(summary, written=True,
+                                         reloaded=reloaded)}
+
+    # ── 框架自升级（受 allow_upgrade 闸门）─────────────────
+    def _framework_status(self) -> dict:
+        """只读：当前版本、可回滚备份、是否开启升级。"""
+        from core.kernel.paths import project_root
+        from service.updater import list_backups
+        root = project_root()
+        return {'ok': True, 'data': {
+            'allow_upgrade': self.allow_upgrade,
+            'version': _fw_version(self.fw),
+            'root': root,
+            'backups': list_backups(root),
+            'max_bytes': _MAX_UPDATE_BYTES,
+            'restart_required_after_update': True,
+        }}
+
+    def _framework_update(self, args: dict) -> dict:
+        """受 allow_upgrade 闸门的框架升级：base64 ZIP + sha256 → 校验/暂存/备份/替换。
+
+        args:
+          zip_b64  (str)  框架源码 ZIP 的 base64（必填；上限 _MAX_UPDATE_BYTES）
+          sha256   (str)  ZIP 原始字节的 sha256，64 位小写十六进制（必填）
+          dry_run  (bool) 只校验/解压/编译，不改动线上文件（默认 false）
+
+        始终要求 sha256，不提供 allow_unsigned：hub 侧必须显式绑定包体。
+        升级后需重启进程，当前进程不会热加载新代码。
+        """
+        if not self.allow_upgrade:
+            return {'ok': False,
+                    'data': '框架升级被禁用（node_agent.allow_upgrade: false）'}
+        from service.updater import UpdateError, apply_source_zip
+        from core.kernel.paths import project_root
+
+        raw_b64 = args.get('zip_b64')
+        if not isinstance(raw_b64, str) or not raw_b64.strip():
+            return {'ok': False, 'data': '缺少 args.zip_b64'}
+        expect = str(args.get('sha256') or '').strip().lower()
+        if not _SHA256_RE.match(expect):
+            return {'ok': False,
+                    'data': 'args.sha256 必须是 64 位小写十六进制 sha256'}
+        try:
+            data = base64.b64decode(raw_b64, validate=True)
+        except Exception as e:
+            return {'ok': False, 'data': f'base64 解码失败: {type(e).__name__}: {e}'}
+        if not data:
+            return {'ok': False, 'data': '升级包为空'}
+        if len(data) > _MAX_UPDATE_BYTES:
+            return {'ok': False,
+                    'data': f'升级包过大：{len(data)}B > 上限 {_MAX_UPDATE_BYTES}B'}
+        actual = hashlib.sha256(data).hexdigest()
+        if not hmac.compare_digest(actual, expect):
+            return {'ok': False,
+                    'data': f'sha256 校验失败：期望 {expect}，实际 {actual}'}
+
+        fd, tmp = tempfile.mkstemp(prefix='zernus_fw_upload_', suffix='.zip')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+            report = apply_source_zip(
+                tmp, project_root(), expected_sha256=expect,
+                dry_run=bool(args.get('dry_run')))
+            return {'ok': True, 'data': report}
+        except UpdateError as e:
+            return {'ok': False, 'data': f'框架更新失败: {e}'}
+        except Exception as e:
+            return {'ok': False,
+                    'data': f'框架更新异常: {type(e).__name__}: {e}'}
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def _framework_rollback(self, args: dict) -> dict:
+        """受 allow_upgrade 闸门的回滚：按备份名（默认最新）恢复旧文件。"""
+        if not self.allow_upgrade:
+            return {'ok': False,
+                    'data': '框架回滚被禁用（node_agent.allow_upgrade: false）'}
+        from service.updater import UpdateError, rollback_source_update
+        from core.kernel.paths import project_root
+        try:
+            report = rollback_source_update(
+                project_root(), str(args.get('backup') or ''))
+            return {'ok': True, 'data': report}
+        except UpdateError as e:
+            return {'ok': False, 'data': f'框架回滚失败: {e}'}
+        except Exception as e:
+            return {'ok': False,
+                    'data': f'框架回滚异常: {type(e).__name__}: {e}'}
+
     # ── 命令白名单执行 ────────────────────────────────────
     def _exec(self, cmd: str, args: dict) -> dict:
         if cmd == 'ping':
             return {'ok': True, 'data': 'pong'}
         if cmd == 'health':
             return {'ok': True, 'data': self._status()}
+        if cmd == 'pkg.list':
+            return self._pkg_list()
+        if cmd == 'config.status':
+            return self._config_status()
+        if cmd == 'config.reload':
+            return self._config_reload()
+        if cmd == 'config.push':
+            return self._config_push(args or {})
+        if cmd == 'framework.status':
+            return self._framework_status()
+        if cmd == 'framework.update':
+            return self._framework_update(args or {})
+        if cmd == 'framework.rollback':
+            return self._framework_rollback(args or {})
+        if cmd == 'pkg.sync':
+            if not self.allow_packages:
+                return {'ok': False,
+                        'data': '包同步被禁用（node_agent.allow_packages: false）'}
+            try:
+                # 与 sys 服务启动时同一套 zkg 流程：源拉取 + sha256/签名校验 + 按需加载。
+                from service.startup import run_zkg
+                result = run_zkg(self.fw)
+                return {'ok': True, 'data': {
+                    'loaded_tools': result.get('loaded_tools') or [],
+                    'plugin_count': result.get('plugin_count', 0),
+                    'api_incompatible': result.get('api_incompatible') or [],
+                }}
+            except Exception as e:
+                return {'ok': False, 'data': f'包同步失败: {type(e).__name__}: {e}'}
         if cmd == 'docker.ws':
             # 云 Docker 沙箱：固定白名单操作，不使用 shell，容器名强校验。
             # 与 shell 同级的危险面（op=exec 等价容器内 shell）→ 走 allow_docker 门禁。
@@ -218,7 +604,8 @@ class NodeAgent:
         self._next_seq()
         await self._client.send(F_HELLO, self._seq,
                                 json.dumps({'name': self.name,
-                                            'version': _fw_version(self.fw)},
+                                            'version': _fw_version(self.fw),
+                                            'capabilities': self.capabilities()},
                                            ensure_ascii=False).encode('utf-8'))
         last_hb = 0.0
         last_in_seq = 0          # 入站帧单调序号（与 hub 出站序号配对，防重放）
@@ -249,7 +636,15 @@ class NodeAgent:
                     if cmd == 'docker.pty':
                         await self._handle_pty_open(req)
                         continue
-                    res = self._exec(cmd, req.get('args') or {})
+                    args = req.get('args') or {}
+                    if cmd in ('shell', 'pkg.sync', 'config.status',
+                               'config.reload', 'config.push',
+                               'framework.update', 'framework.rollback'):
+                        # 可能阻塞数十秒：放线程里跑，别把心跳/PTY 共用的事件循环卡死
+                        # （hub 侧读帧超时 90s，长时间无帧会被判定断线）。
+                        res = await asyncio.to_thread(self._exec, cmd, args)
+                    else:
+                        res = self._exec(cmd, args)
                     res['id'] = int(req.get('id', -1))
                 except Exception as e:
                     res = {'id': -1, 'ok': False,
@@ -576,6 +971,34 @@ def _fw_version(fw) -> str:
         return ''
 
 
+def _apply_hot_config(agent, old_config, new_config, log=None):
+    """配置热重载回调：只热更新运行期安全的字段。
+
+    ``allow_*`` 与 ``interval`` 随即可生效；``name / secret / hub_host /
+    hub_port`` 绑定在当前已建立的连接上，热改会让 hub 验签失败或连错地址，
+    因此这里不热改，只提示需要重启。
+    """
+    if agent is None:
+        return []
+    log = log or (lambda m: logger.info(m))
+    old = (old_config or {}).get('node_agent') or {}
+    new = (new_config or {}).get('node_agent') or {}
+    agent.allow_shell = bool(new.get('allow_shell', False))
+    agent.allow_docker = bool(new.get('allow_docker', False))
+    agent.allow_packages = bool(new.get('allow_packages', False))
+    agent.allow_config = bool(new.get('allow_config', False))
+    agent.allow_upgrade = bool(new.get('allow_upgrade', False))
+    try:
+        agent.interval = max(5, int(new.get('interval', agent.interval)))
+    except (TypeError, ValueError):
+        log('配置热重载: node_agent.interval 非法，保留原值')
+    restart = [k for k in ('name', 'secret', 'hub_host', 'hub_port')
+               if old.get(k) != new.get(k)]
+    if restart:
+        log(f"配置热重载: {', '.join(restart)} 需重启节点代理后生效")
+    return restart
+
+
 def register(ctx):
     """启动节点代理（node_agent.enabled 默认 false，仅被管节点开启）"""
     global _agent
@@ -585,6 +1008,8 @@ def register(ctx):
         ctx.log("节点代理未启用 (node_agent.enabled: false)")
         return
     _agent = NodeAgent(fw, ctx_log=ctx.log)
+    ctx.hook('config.reload',
+             lambda old, new: _apply_hot_config(_agent, old, new, ctx.log))
     _agent.start()
     ctx.log(f"节点代理已启动: {cfg.get('hub_host', '?')}:{cfg.get('hub_port', '?')}"
             f"（本节点名 {_agent.name or '未设置'}）")

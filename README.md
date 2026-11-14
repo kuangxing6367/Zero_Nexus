@@ -39,7 +39,8 @@
 - 定位是**框架自带的系统服务库**（与内核同进程运行，不是独立进程/独立机器）：
 - **zkg 包管理**（`service/zkg`）：本地 `repo/` + 官方源（`zkg.zgric.top`，默认不主动连接），依赖驱动、只加载被依赖的机制包；拉包校验 sha256；`zkg new` 脚手架。
 - 框架基础服务：`sys` 服务 / `user` 服务拉起（`service/startup.py`）、内存看门狗（`service/watchdog.py`）。
-- **通用安全传输原语**（`service/transport`）：认证 TCP 帧，见下文「安全传输」。
+- **安全传输原语**（`service/transport`）：认证 TCP 帧，见下文「安全传输」。
+- **框架自升级**（`service/updater.py`）：sha256 fail-closed + 归档安全校验 + 暂存编译检查 + 备份/替换/回滚；WebUI 与节点代理共用。
 
 ### 软件级（`software/`）
 - 官方扩展 `software/extensions/`、用户插件 `software/plugins/`。
@@ -158,6 +159,10 @@ SQLite 与 MySQL 的查询 API 一致（`query` / `query_one` / `execute` / `ins
 | `http_api` | 独立对外 HTTP REST API | 关 |
 | `http_inject` | HTTP 事件注入接入端（调试用） | 关 |
 | `image_renderer` | 图像渲染 | 开 |
+| `status_panel` | 状态面板（`/health` 只读 JSON + 状态页） | 开 |
+| `node_manager` | 多机 L1：只读监控聚合 | 关 |
+| `node_control` | 多机 L2/L3：hub 侧分组与批量/滚动命令 | 关 |
+| `node_agent` | 多机 L2/L3：节点侧代理（主动连 hub） | 关 |
 
 启用 / 端口由 `extensions.yaml` 控制，并在 `config.yaml → extensions` 可见（实际启用以 `extensions.yaml` 为准）。
 

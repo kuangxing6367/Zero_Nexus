@@ -10,6 +10,7 @@
 - core.runtime.*  编排节点（dispatch / plugins / watchdogs / lifecycle / reply）
 """
 import asyncio
+import copy
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +23,7 @@ from core.messaging.event_bus import EventBus
 from core.log_broker import log_broker, FrameworkLogHandler
 from core.adapters.protocol import ServiceRegistry
 from core.terminal import TerminalInput, terminal_commands
-from core.hooks import HookRegistry
+from core.hooks import HookPoints, HookRegistry
 
 from core.kernel.banner import read_version, emit_banner
 from core.kernel.logging_setup import setup_logging
@@ -165,6 +166,58 @@ class Framework:
                 return dat_dir
             return os.path.join(os.path.dirname(os.path.dirname(__file__)), dat_dir)
         return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'plugins_dat')
+
+    # ── 配置热重载 ──
+
+    def reload_config(self) -> dict:
+        """重新读取配置文件，就地更新 ``self.config`` 并触发 ``config.reload`` 扩展点。
+
+        - **就地更新**：保持 ``self.config`` 对象身份不变，已持有引用的模块能读到新值。
+        - **不重启服务**：端口 / 数据库连接 / SSL 上下文等启动期绑定项不会因本方法改变；
+          这类配置仍需重启进程。扩展若实现了 ``config.reload`` 处理器，可自行即时生效。
+        - ``config.reload`` handler 签名：``handler(old_config, new_config)``，
+          sync / async 均可（线程上下文走 ``trigger_sync``）。
+
+        :raises ValueError: 新配置不是 dict，或缺少框架必需段（database / plugin）
+        :return: ``{'changed': [顶层段], 'config_path': ..., 'hook_point': ...}``
+        """
+        new_config = load_config(self.config_path)
+        if not isinstance(new_config, dict):
+            raise ValueError("配置文件根节点必须是映射（dict）")
+        missing = [k for k in ('database', 'plugin') if k not in new_config]
+        if missing:
+            raise ValueError(f"配置缺少框架必需段: {', '.join(missing)}")
+
+        old_config = copy.deepcopy(self.config)
+        self.config.clear()
+        self.config.update(new_config)
+
+        # 刷新由 config 派生的缓存（只刷可安全热更新的字段）
+        plugin_cfg = self.config.get('plugin') or {}
+        self._heartbeat_interval = plugin_cfg.get(
+            'heartbeat_interval', self._heartbeat_interval)
+        wd_cfg = ((self.config.get('service') or {}).get('watchdog') or {})
+        try:
+            self._memory_limit_mb = int(
+                wd_cfg.get('max_memory_mb', self._memory_limit_mb))
+            self._memory_check_interval = int(
+                wd_cfg.get('interval', self._memory_check_interval))
+        except (TypeError, ValueError):
+            logger.warning("配置热重载: watchdog 数值字段非法，保留原值")
+
+        changed = sorted(k for k in (set(old_config) | set(self.config))
+                         if old_config.get(k) != self.config.get(k))
+
+        hooks = getattr(self, 'hooks', None)
+        if hooks is not None:
+            try:
+                hooks.trigger_sync(HookPoints.CONFIG_RELOAD, old_config, self.config)
+            except Exception:
+                logger.exception("配置热重载: 触发 config.reload 扩展点失败")
+
+        logger.info("配置已热重载: %s", changed or '(无变化)')
+        return {'changed': changed, 'config_path': self.config_path,
+                'hook_point': HookPoints.CONFIG_RELOAD}
 
     # ── 生命周期（委托 core.runtime.lifecycle）──
 

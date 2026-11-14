@@ -25,7 +25,7 @@ main.py
   TCP 连接后发送任意 ≤256 字节，服务端回 `OK\n` 即断开；尚未承载「状态 / 事件」协议（见 [roadmap.md](roadmap.md)）。
 - `sys` 服务负责初始化（zkg 初始化、数据库就绪、看门狗拉起）；`user` 服务承载用户侧能力。
 - **服务级与内核同进程运行**——「sys / user 服务」是同一进程内的两个启动阶段，不是独立进程或跨机拆分；
-  框架自带能力（zkg / 看门狗 / 传输原语）都由它拉起。
+  框架自带能力（zkg / 看门狗 / 传输原语 / 框架自升级）都由它拉起。
 
 ## 事件总线（EventBus）
 
@@ -38,6 +38,8 @@ main.py
 
 - 标准扩展点常量在 `core/hooks/registry.py` 的 `HookPoints`（如 `HTTP_BEFORE_REQUEST`、`EVENT_BEFORE_DISPATCH`、`COMMAND_BEFORE`、`MESSAGE_BEFORE_SEND`）。
 - 通过 `HookRegistry` 注册；部分 Hook 返回特定值可短路 / 丢弃（详见源码 `core/hooks/registry.py`）。
+- 配置热重载由 `Framework.reload_config()` 触发 `config.reload`（`handler(old_config, new_config)`）；
+  扩展可在此即时应用自己的配置，端口 / DB / SSL 等启动期项仍需重启。
 
 ## 协议抽象
 

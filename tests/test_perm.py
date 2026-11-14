@@ -4,6 +4,13 @@ import os
 import sys
 import time
 
+# Windows 控制台默认 GBK，用例里的 ⊃ / → 会触发 UnicodeEncodeError（不是断言失败）。
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.storage import Database, _auto_create_tables

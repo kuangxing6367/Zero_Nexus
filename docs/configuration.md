@@ -7,6 +7,25 @@ Zeronus 有两份配置：
 
 > 实际扩展启用以 `extensions.yaml` 为准；`config.yaml → extensions` 段仅为直观查看，启动时会由 `extensions.yaml` 同步覆盖。
 
+## 托管覆盖层 `config.managed.yaml`
+
+`config.yaml` 同目录下可存在 `config.managed.yaml`：加载时**最后合并**（深度合并
+dict，list / 标量整体覆盖），优先级高于 `config.yaml` 与 `extensions.yaml`。
+它由编排面下发（节点侧 `config.push`），**不修改用户的 `config.yaml`**；删除该
+文件即恢复用户原配置。
+
+```yaml
+# config.managed.yaml：只写需要覆盖的片段
+node_agent:
+  interval: 60
+  allow_shell: true
+```
+
+热重载：`Framework.reload_config()` 会重读 `config.yaml` + 托管覆盖层，就地更新
+`fw.config` 并触发 `config.reload` 扩展点，不重启进程。**端口、数据库连接、
+SSL 上下文等启动期绑定项仍必须重启**；扩展若实现 `config.reload` 处理器，
+可自行即时应用自己的配置。
+
 ## config.yaml 字段
 
 ### 数据库 `database`
@@ -119,7 +138,13 @@ security:
   encrypted: false             # 是否启用加密通讯（RSA）；false 走 Token 校验
   token: ""                    # 非加密模式访问 Token（留空 = 不强制校验）
   rsa_callback: ""             # 加密模式 RSA 握手完成后的回调端地址
+  update_expected_sha256: ""   # 框架更新 ZIP 的期望 sha256（留空且未 allow_unsigned 时拒绝更新）
+  update_allow_unsigned: false # 显式允许未校验的框架更新（不推荐）
 ```
+
+> 框架更新（WebUI / 节点 `framework.update`）先校验 sha256，再暂存、编译检查、
+> 备份旧文件后替换；失败自动回滚，也可用 `/api/framework/rollback` 或
+> `rollback_framework()` 显式回滚。升级/回滚后需重启进程。
 
 ### 项目身份 `project`
 ```yaml
@@ -156,4 +181,5 @@ extensions:
     token: ''
 ```
 
-修改后重启生效。
+修改后重启生效；需要不重启更新时，改用上文的托管覆盖层并调用
+`Framework.reload_config()`（启动期绑定项仍需重启）。

@@ -8,9 +8,7 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 import sys
-import tempfile
 import threading
 import zipfile
 
@@ -36,11 +34,8 @@ def register(ctx):
     _github_url_candidates = ctx._github_url_candidates
     _check_public_rate = ctx._check_public_rate
 
-    # 框架源码更新白名单：只覆盖这些代码/配置文件，用户数据一律跳过
-    _FW_UPDATE_INCLUDE = {
-        'framework', 'extensions', 'sql', 'main.py', 'requirements.txt',
-        'start.sh', '.gitignore', 'README.md', 'LICENSE', 'VERSION', 'CHANGELOG.md',
-    }
+    # 框架源码更新白名单与回滚机制统一由 service/updater.py 提供：
+    # 只覆盖框架代码/文档，保护 data/、repo/、config.yaml、software/plugins/。
 
     def _get_framework_local_commit() -> str:
         """获取本地 git 当前提交短 SHA（无 .git 时返回空）"""
@@ -195,10 +190,10 @@ def register(ctx):
     def update_framework():
         """
         从 GitHub 更新框架源码到指定版本（默认最新 Release）
-        只覆盖框架代码（framework/software/extensions/webui/frontend/sql/main.py 等），
-        保留用户数据（plugins/、data/、config.yaml、*.db 等），
-        更新后需重启生效。
-        请求体可选 version 指定目标版本号（如 1.0.0）。
+        只覆盖框架代码与文档（`service/updater.py` 的 FRAMEWORK_INCLUDE 白名单），
+        保留用户数据（software/plugins/、data/、repo/、config.yaml、extensions.yaml 等），
+        更新后需重启生效。请求体可选 version 指定目标版本号（如 1.0.0），
+        可选 dry_run: true 只校验不落盘。
 
         供应链安全（fail closed）：更新 ZIP 必须通过 sha256 校验后才落盘覆盖——
         - config.security.update_expected_sha256 配置了期望哈希 → 强制比对；
@@ -209,7 +204,9 @@ def register(ctx):
         repo = 'kuangxing6367/Zero_Nexus'
         branch = 'main'
         root = _project_root()
-        req_version = (request.json or {}).get('version') or ''
+        body = request.json or {}
+        req_version = body.get('version') or ''
+        dry_run = bool(body.get('dry_run'))
 
         sec_cfg = framework.config.get('security', {}) or {}
         expected_sha = str(sec_cfg.get('update_expected_sha256') or '').strip().lower()
@@ -244,83 +241,55 @@ def register(ctx):
             if tmp_zip is None:
                 return jsonify({'code': 500, 'msg': '框架更新 ZIP 下载失败（代理/镜像/直连均不可用）'}), 500
 
-            # sha256 校验（fail closed）：哈希不匹配 → 拒绝覆盖任何文件
-            if expected_sha:
-                import hashlib as _hashlib
-                h = _hashlib.sha256()
-                with open(tmp_zip, 'rb') as f:
-                    for chunk in iter(lambda: f.read(65536), b''):
-                        h.update(chunk)
-                actual_sha = h.hexdigest()
-                if actual_sha != expected_sha:
-                    audit_log(admin['id'], admin['username'], 'update_framework',
-                              'system', 'framework', {'expected': expected_sha,
-                                                      'actual': actual_sha}, 'failure',
-                              'sha256 校验失败，已拒绝更新')
-                    return jsonify({
-                        'code': 400,
-                        'msg': (f'更新 ZIP sha256 校验失败（期望 {expected_sha[:16]}…，'
-                                f'实际 {actual_sha[:16]}…），已拒绝更新。'
-                                '包体可能被镜像篡改或目标版本已变更，请核对哈希后重试。'),
-                    }), 400
-
-            # 解压到临时目录
-            tmp_dir = tempfile.mkdtemp(prefix='zernus_fw_')
+            # 校验 + 暂存 + 编译检查 + 备份 + 替换 + 失败自动回滚，
+            # 全部逻辑在 service/updater.py（WebUI 与节点代理共用同一机制）。
+            from service.updater import UpdateError, apply_source_zip
             try:
-                with zipfile.ZipFile(tmp_zip, 'r') as zf:
-                    # 共享安全校验：盘符/ADS/保留名、NFC+casefold 碰撞、
-                    # 条目数/总展开体积/压缩比、canonical containment。
-                    # 必须在覆盖任何代码文件之前完成。
-                    from core.security.archive_guard import (
-                        SafeArchiveError, FRAMEWORK_UPDATE_LIMITS,
-                        validate_zip, safe_extract_zip)
-                    try:
-                        validate_zip(zf, FRAMEWORK_UPDATE_LIMITS)
-                    except SafeArchiveError as e:
-                        return jsonify({'code': 400, 'msg': f'更新包校验失败: {e}'}), 400
-                    safe_extract_zip(zf, tmp_dir, FRAMEWORK_UPDATE_LIMITS,
-                                     prevalidated=True)
-
-                # GitHub ZIP 内含一层 repo-tag/ 目录
-                entries = [e for e in os.listdir(tmp_dir) if os.path.isdir(os.path.join(tmp_dir, e))]
-                src_root = os.path.join(tmp_dir, entries[0]) if entries else tmp_dir
-
-                # 覆盖白名单内的代码/配置文件
-                updated = []
-                for name in os.listdir(src_root):
-                    if name not in _FW_UPDATE_INCLUDE:
-                        continue  # 保护 plugins/ data/ config.yaml 等用户数据
-                    src = os.path.join(src_root, name)
-                    dst = os.path.join(root, name)
-                    if os.path.isdir(src):
-                        # 删除旧目录再整体复制，避免残留旧文件
-                        if os.path.isdir(dst):
-                            shutil.rmtree(dst, ignore_errors=True)
-                        shutil.copytree(src, dst)
-                    elif os.path.isfile(src):
-                        os.makedirs(os.path.dirname(dst), exist_ok=True) if os.path.dirname(dst) else None
-                        shutil.copy2(src, dst)
-                    updated.append(name)
-
-                # 新版本可能引入新增依赖：自动安装缺失项（不覆盖已安装包）
-                try:
-                    _install_new_requirements()
-                except Exception as e:
-                    logger.warning(f"框架更新：依赖自动安装异常: {e}")
-
-                audit_log(admin['id'], admin['username'], 'update_framework', 'system', 'framework',
-                          {'files': updated, 'target': tag or branch}, 'success')
-                return jsonify({
-                    'code': 0,
-                    'msg': f'框架已更新到 {tag or "最新"}（{len(updated)} 项），请重启框架生效。',
-                    'data': {'updated': updated, 'target': tag or 'latest'},
-                })
+                report = apply_source_zip(
+                    tmp_zip, root, expected_sha256=expected_sha,
+                    allow_unsigned=allow_unsigned, dry_run=dry_run)
+            except UpdateError as e:
+                audit_log(admin['id'], admin['username'], 'update_framework',
+                          'system', 'framework',
+                          {'target': tag or branch, 'dry_run': dry_run},
+                          'failure', str(e))
+                return jsonify({'code': 400, 'msg': f'更新失败: {e}'}), 400
             finally:
                 try:
                     os.unlink(tmp_zip)
                 except Exception:
                     pass
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+            updated = report.get('updated') or []
+            if dry_run:
+                audit_log(admin['id'], admin['username'], 'update_framework',
+                          'system', 'framework',
+                          {'files': updated, 'target': tag or branch,
+                           'dry_run': True}, 'success')
+                return jsonify({
+                    'code': 0,
+                    'msg': f'更新包校验通过（dry-run，{len(updated)} 项），未改动任何文件。',
+                    'data': {'updated': updated, 'target': tag or 'latest',
+                             'dry_run': True},
+                })
+
+            # 新版本可能引入新增依赖：自动安装缺失项（不覆盖已安装包）
+            try:
+                _install_new_requirements()
+            except Exception as e:
+                logger.warning(f"框架更新：依赖自动安装异常: {e}")
+
+            audit_log(admin['id'], admin['username'], 'update_framework', 'system', 'framework',
+                      {'files': updated, 'target': tag or branch,
+                       'backup': report.get('backup')}, 'success')
+            return jsonify({
+                'code': 0,
+                'msg': (f'框架已更新到 {tag or "最新"}（{len(updated)} 项），'
+                        '请重启框架生效；如需回滚可调用 /api/framework/rollback。'),
+                'data': {'updated': updated, 'target': tag or 'latest',
+                         'backup': report.get('backup'),
+                         'restart_required': True},
+            })
         except zipfile.BadZipFile:
             return jsonify({'code': 400, 'msg': '下载的 ZIP 文件无效'}), 400
         except Exception as e:
@@ -328,6 +297,43 @@ def register(ctx):
             audit_log(admin['id'], admin['username'], 'update_framework', 'system', 'framework',
                       {}, 'failure', str(e))
             return jsonify({'code': 500, 'msg': f'更新失败: {e}'}), 500
+
+    @app.route('/api/framework/backups', methods=['GET'])
+    @require_auth
+    def framework_backups():
+        """列出可回滚的框架更新备份（只读）。"""
+        from service.updater import list_backups
+        try:
+            return jsonify({'code': 0, 'data': list_backups(_project_root())})
+        except Exception as e:
+            logger.error(f"读取框架更新备份失败: {e}")
+            return jsonify({'code': 500, 'msg': str(e)}), 500
+
+    @app.route('/api/framework/rollback', methods=['POST'])
+    @require_super
+    def framework_rollback():
+        """回滚到指定框架更新备份（默认最新一份），回滚后需重启。"""
+        admin = request.admin
+        name = (request.json or {}).get('backup') or ''
+        from service.updater import UpdateError, rollback_source_update
+        try:
+            report = rollback_source_update(_project_root(), name)
+        except UpdateError as e:
+            audit_log(admin['id'], admin['username'], 'rollback_framework',
+                      'system', 'framework', {'backup': name}, 'failure', str(e))
+            return jsonify({'code': 400, 'msg': f'回滚失败: {e}'}), 400
+        except Exception as e:
+            logger.error(f"回滚框架失败: {e}", exc_info=True)
+            audit_log(admin['id'], admin['username'], 'rollback_framework',
+                      'system', 'framework', {'backup': name}, 'failure', str(e))
+            return jsonify({'code': 500, 'msg': f'回滚失败: {e}'}), 500
+        audit_log(admin['id'], admin['username'], 'rollback_framework',
+                  'system', 'framework', report, 'success')
+        return jsonify({
+            'code': 0,
+            'msg': f'已回滚到备份 {report["backup"]}，请重启框架生效。',
+            'data': report,
+        })
 
     @app.route('/api/restart', methods=['POST'])
     @require_super

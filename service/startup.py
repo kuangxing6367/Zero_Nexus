@@ -76,6 +76,33 @@ def _zkg_sources(config: dict) -> list:
     return srcs
 
 
+def run_zkg(fw) -> dict:
+    """执行一次完整 zkg 流程：scan → resolve → rebuild → 按需加载。
+
+    启动期（sys 服务）与节点包同步（node_agent 的 pkg.sync）共用同一条路径，
+    保证扫描根、源配置与完整性校验（sha256 / HMAC 签名）完全一致。
+
+    :return: loader.run() 的结果字典（含 loaded_tools / plugin_count 等）
+    """
+    from service.zkg.loader import Loader
+    from core.ctx import PLUGIN_API_VERSION
+
+    root = (fw.config.get('zkg') or {}).get('local_dir', 'repo')
+    if not os.path.isabs(root):
+        root = os.path.join(project_root(), root)
+    plugin_root = os.path.join(project_root(), 'software', 'plugins')
+    data_dir = os.path.join(project_root(), 'data')
+    loader = Loader(root, data_dir,
+                    sources_cfg=_zkg_sources(fw.config),
+                    scan_roots=[plugin_root],
+                    plugin_api_version=PLUGIN_API_VERSION)
+    result = loader.run()
+    # 机制包统一暴露：插件经 ctx.zkg_tool(name) 取用
+    fw.zkg_tools = loader.loaded_tools()
+    result['root'] = root
+    return result
+
+
 async def start_sys_service(fw, config: dict):
     """拉起 sys 服务（初始化）：zkg 包管理、框架服务（mg/db）、看门狗。"""
     svc = (config.get('service', {}) or {}).get('sys', {}) or {}
@@ -86,25 +113,13 @@ async def start_sys_service(fw, config: dict):
     #            → 加载被依赖工具。用户插件在 software/plugins/<pkg>/manifest.toml
     #            的 dependencies 里声明所需官方工具，zkg 据此决定加载哪些。
     try:
-        from service.zkg.loader import Loader
-        from core.ctx import PLUGIN_API_VERSION
-        root = (fw.config.get('zkg') or {}).get('local_dir', 'repo')
-        if not os.path.isabs(root):
-            root = os.path.join(project_root(), root)
-        plugin_root = os.path.join(project_root(), 'software', 'plugins')
-        data_dir = os.path.join(project_root(), 'data')
-        loader = Loader(root, data_dir,
-                        sources_cfg=_zkg_sources(fw.config),
-                        scan_roots=[plugin_root],
-                        plugin_api_version=PLUGIN_API_VERSION)
-        result = loader.run()
-        # 机制包统一暴露：插件经 ctx.zkg_tool(name) 取用
-        fw.zkg_tools = loader.loaded_tools()
+        result = run_zkg(fw)
         tools = result.get('loaded_tools') or []
         logger.info(
             f"[sys] zkg 包管理就绪：仓库 {result.get('plugin_count', 0)} 个包，"
             f"按依赖加载工具 {len(tools)} 个"
-            + (f" {tools}" if tools else "")  + f"（仓库目录 {root}）"
+            + (f" {tools}" if tools else "")
+            + f"（仓库目录 {result.get('root', '')}）"
         )
     except Exception as e:
         logger.warning(f"[sys] zkg 初始化跳过: {e}")

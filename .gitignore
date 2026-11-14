@@ -40,6 +40,8 @@ packages/
 # ============================================================
 config.yaml
 config.yaml.bak.*
+config.managed.yaml
+.update_backup/
 .env
 cookies.txt
 *.db

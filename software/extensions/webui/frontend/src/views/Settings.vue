@@ -58,6 +58,7 @@
           <template #header><div class="card-head">框架操作</div></template>
           <div class="mb">
             <el-button @click="checkUpdate">检查框架更新</el-button>
+            <el-button @click="loadBackups">刷新更新备份</el-button>
             <el-button type="danger" @click="restart">重启框架</el-button>
           </div>
           <div v-if="fwInfo">
@@ -77,7 +78,17 @@
               <el-button type="primary" size="small" style="margin-left:8px" @click="doFrameworkUpdate">更新到所选版本</el-button>
             </div>
           </div>
-          <div class="dim small mt">更新框架仅覆盖代码（framework/web/main.py 等），自动保留 plugins/、data/、config.yaml；更新后需重启生效。</div>
+          <div v-if="backups.length" class="mt">
+            <div class="small mb" style="color:var(--el-text-color-secondary)">可回滚备份（新 → 旧）</div>
+            <div v-for="b in backups" :key="b.name" class="sb-row">
+              <span class="mono small">{{ b.created_at || b.name }}</span>
+              <span class="dim small ml">{{ b.updated_count }} 项</span>
+              <span v-if="b.rolled_back_at" class="dim small ml">已回滚 {{ b.rolled_back_at }}</span>
+              <span class="sb-spacer"></span>
+              <el-button size="small" type="warning" @click="doRollback(b)">回滚</el-button>
+            </div>
+          </div>
+          <div class="dim small mt">更新框架只覆盖代码与文档（core/service/software 扩展等），自动保留 plugins/、data/、config.yaml、extensions.yaml；更新后需重启生效，失败可回滚。</div>
         </el-card>
       </el-col>
     </el-row>
@@ -167,6 +178,7 @@ const adminList = ref([])
 const pwd = ref({ old: '', new: '' })
 const fwInfo = ref(null)
 const targetVersion = ref('')
+const backups = ref([])
 const addVisible = ref(false)
 const admForm = ref({ username: '', password: '', role: 'admin' })
 
@@ -258,13 +270,24 @@ async function checkUpdate() {
 async function doFrameworkUpdate() {
   const ver = targetVersion.value
   const desc = ver ? `将更新框架到版本 ${ver}` : '将更新框架到最新版本'
-  await ElMessageBox.confirm(`确定更新框架吗？\n${desc}\n将覆盖 framework/web/main.py 等代码，自动保留插件与配置，更新后需重启生效。`, '更新框架', { type: 'warning' })
+  await ElMessageBox.confirm(`确定更新框架吗？\n${desc}\n将覆盖框架代码与文档（core/service/software 扩展等），自动保留插件、数据与配置，更新后需重启生效。`, '更新框架', { type: 'warning' })
   const body = ver ? { version: ver } : {}
   const r = await apiCall('/api/framework/update', { method: 'POST', body })
-  if (r) { ElMessage.success(r.msg); checkUpdate() }
+  if (r) { ElMessage.success(r.msg); checkUpdate(); loadBackups() }
 }
 
-onMounted(load)
+async function loadBackups() {
+  const r = await apiCall('/api/framework/backups')
+  if (r) backups.value = r.data || []
+}
+async function doRollback(b) {
+  const when = b.created_at || b.name
+  await ElMessageBox.confirm(`确定回滚到 ${when} 的备份吗？\n将恢复该次更新前的框架文件，回滚后需重启生效。`, '回滚框架', { type: 'warning' })
+  const r = await apiCall('/api/framework/rollback', { method: 'POST', body: { backup: b.name } })
+  if (r) { ElMessage.success(r.msg); loadBackups() }
+}
+
+onMounted(() => { load(); loadBackups() })
 </script>
 
 <style scoped>

@@ -307,7 +307,8 @@ check('全部机制包 sha256 与索引一致 (%d 个)' % len(idx['packages']),
 print("== 10. 外部归档入口已接入 ==")
 for rel, keyword in [
     ('core/terminal/builtins.py', 'safe_extract_zip'),
-    ('software/extensions/webui/framework_ops.py', 'validate_zip'),
+    ('service/updater.py', 'validate_zip'),
+    ('service/updater.py', 'safe_extract_zip'),
     ('software/extensions/webui/plugins.py', 'validate_zip'),
     ('service/zkg/loader.py', 'safe_extract_tar'),
 ]:
@@ -315,6 +316,15 @@ for rel, keyword in [
         src = f.read()
     check('%s 已接入 %s' % (rel, keyword),
           'archive_guard' in src and keyword in src)
+
+# 框架更新已收口到 service/updater.py：WebUI 必须走该机制，
+# 不得自行解压/覆盖（否则会绕过备份回滚与暂存编译检查）。
+with open(os.path.join(root, 'software/extensions/webui/framework_ops.py'),
+          encoding='utf-8') as f:
+    fw_src = f.read()
+check('framework_ops.py 通过 service.updater 应用更新',
+      'service.updater' in fw_src and 'apply_source_zip' in fw_src
+      and 'safe_extract_zip' not in fw_src)
 
 print()
 print(f"通过 {passed} 项，失败 {failed} 项")

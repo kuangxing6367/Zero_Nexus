@@ -85,8 +85,8 @@ main.py
 | `http_api` | 独立对外 HTTP REST API（1145） | 关 |
 | `http_inject` | HTTP 事件注入接入端（8901，调试用） | 关 |
 | `node_manager` | 多机 L1 监控聚合（轮询各节点 /health） | 关 |
-| `node_control` | 多机 L2 控制通道 hub 侧（37010） | 关 |
-| `node_agent` | 多机 L2 节点侧（主动连 hub） | 关 |
+| `node_control` | 多机 L2/L3 hub 侧（37010）：分组 + 批量/滚动命令 + PTY 流 | 关 |
+| `node_agent` | 多机 L2/L3 节点侧（主动连 hub，心跳/命令/包同步） | 关 |
 
 ## 开发约定
 
@@ -111,9 +111,19 @@ main.py
 
 ### 配置
 - 主配置 `config.yaml`；扩展启用以 `extensions.yaml` 为准（启动同步覆盖 `config.yaml → extensions`）。
+- 托管覆盖层 `config.managed.yaml`（与 `config.yaml` 同目录）：加载时**最后合并**，
+  优先级最高，由编排面下发；不改用户 `config.yaml`。`Framework.reload_config()`
+  就地更新配置并触发 `config.reload` 扩展点（端口/DB/SSL 等启动期项仍需重启）。
 - 支持 `${VAR}` / `${VAR:-default}` 环境变量展开；回写 yaml 保留 `${VAR}` 引用，不落盘明文。
 - 监听地址默认 `127.0.0.1`；局域网/公网需显式放开并配合 `ssl` + 反向代理。
 - 默认管理员 `admin / admin123`（首次登录改密；密码用 `pbkdf2_sha256`，不依赖 bcrypt）。
+- 多机 L3：hub `node_control.groups` 只做分组成员解析，不绕过 `nodes` 密钥清单；
+  `node_agent` 的 `pkg.sync` 会拉取并加载机制包，须显式 `allow_packages: true`（默认禁）；
+  配置下发（`config.push` / `config.reload`）须显式 `allow_config: true`（默认禁），
+  带 sha256 强校验、原子写与失败回滚；框架升级（`framework.update` / `rollback`）须
+  显式 `allow_upgrade: true`（默认禁），走 `service/updater.py`：sha256 + 归档校验 +
+  暂存编译 + 备份替换 + 失败/显式回滚，升级后需重启。
+  `pkg.list` / `config.status` / `framework.status` 只读，无需开闸。
 
 ### 设计总纲（类 Linux 内核，五条原则）
 1. **机制 ≠ 策略**：内核只提供通用机制，策略由上层决定。

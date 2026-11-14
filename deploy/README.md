@@ -61,7 +61,14 @@ node_agent:
   name: node-1
   secret: change-me-node-1
   allow_shell: false
+  allow_packages: false   # pkg.sync 需显式开启
+  allow_config: false     # config.push / config.reload 需显式开启
+  allow_upgrade: false    # framework.update / rollback 需显式开启
 ```
 
-命令白名单 `ping` / `health` / `shell`（shell 需节点显式开启）。用法详见
-[docs/deployment.md](../docs/deployment.md) 多机管理（L2）章节。
+命令白名单 `ping` / `health` / `pkg.list` / `config.status` / `framework.status`
+恒可用；`shell` 需 `allow_shell`，`docker.*` 需 `allow_docker`，`pkg.sync` 需
+`allow_packages`，配置下发需 `allow_config`，框架升级需 `allow_upgrade`。
+L3 分组、并发/滚动下发（`send_group` / `broadcast`）、配置下发（`push_config`）
+与框架升级（`push_framework` / `rollback_framework`）用法详见
+[docs/deployment.md](../docs/deployment.md) 多机管理（L2 / L3）章节。

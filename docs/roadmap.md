@@ -71,7 +71,37 @@
       （FramedClient 主动连 hub），帧类型：HELLO 握手 / HEARTBEAT 心跳状态 /
       CMD 命令下发 / RESULT 回执；鉴权用预共享 per-node secret（整帧 HMAC 验签），
       命令白名单 ping/health/shell（shell 需节点侧 allow_shell 显式开启）（2026-09-17）。
-- [ ] **L3 编排**：经控制通道做包分发（zkg 源已有）、配置下发、灰度升级、节点分组。
+- [x] **L3 编排（第一切片，2026-11-14）**：
+  - 节点分组：hub `node_control.groups`，成员须在 `nodes` 密钥清单内（分组不绕过鉴权）。
+  - 灰度/批量下发：`send_group(group, cmd, args, timeout, concurrency, stagger)` /
+    `broadcast(...)`，单台失败不中断整组，聚合 `total/ok/failed/offline/results`。
+  - 能力上报：HELLO 携带 `capabilities`（命令 → 是否启用），hub `snapshot()` 可见。
+  - 包分发：节点侧 `pkg.list`（只读）/ `pkg.sync`（按 zkg 源重跑 scan→resolve→
+    rebuild→加载，sha256/签名校验复用启动路径），`pkg.sync` 需 `allow_packages: true`。
+- [x] **配置热重载 / 配置下发（2026-11-14）**：
+  - `Framework.reload_config()` 就地更新 `self.config`，刷新 heartbeat/watchdog 派生值，
+    触发 `config.reload` 扩展点（`handler(old, new)`）。
+  - `core.config` 支持托管覆盖层 `config.managed.yaml`：加载时最后合并，优先级高于
+    `config.yaml` / `extensions.yaml`，不改用户原配置文件。
+  - 节点侧 `config.status`（只读）/ `config.reload` / `config.push`，后两者需
+    `allow_config: true`；下发带 sha256 强校验、1MiB 上限、dry_run、原子写、
+    失败自动回滚，`clear` 可删除覆盖层。
+  - 局限：端口 / 数据库连接 / SSL 等启动期绑定项仍需重启。
+- [x] **框架自身升级（2026-11-14）**：
+  - `service/updater.py` 统一「校验 → 暂存 → 编译检查 → 备份 → 替换 → 回滚」：
+    sha256 fail-closed（默认必须显式提供）、归档安全校验、旧文件备份到
+    `.update_backup/`、替换失败自动回滚、可显式回滚到任意备份。
+  - 白名单只覆盖框架代码/文档：`core` / `service` / `software/extensions` /
+    `sql` / `deploy` / `docs` 等；保护 `data/`、`repo/`、`config.yaml`、
+    `extensions.yaml` 与 `software/plugins/`。
+  - WebUI：`POST /api/framework/update` 复用该机制并支持 `dry_run`；
+    新增 `GET /api/framework/backups` 与 `POST /api/framework/rollback`。
+  - 多机：节点侧 `framework.status`（只读）/ `framework.update` /
+    `framework.rollback`，后两者需 `allow_upgrade: true`；hub 侧
+    `push_framework()` / `rollback_framework()` / `framework_status()`，
+    默认逐台（`concurrency=1`）滚动。
+  - 局限：**不自动重启、不做重启后健康检查与自动回滚**；灰度是否继续
+    由调用方看回执决定。升级/回滚后需重启进程才加载新代码。
 - 原则：L1 没跑稳不碰 L2；hub 不主动反向连接节点（保持出站单向，网络要求最低）。
 
 ---
